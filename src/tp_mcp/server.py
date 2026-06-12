@@ -982,7 +982,8 @@ TOOLS = [
                 "structure": {"type": "object"},
                 "workout_type_id": {
                     "type": "integer",
-                    "description": "Sport/workout type: 1=swim, 2=bike, 3=run, etc. Sets the sport on templates saved without one.",
+                    "description": "Sport/workout type: 1=swim, 2=bike, 3=run, etc. "
+                                   "Sets the sport on templates saved without one.",
                 },
                 "workout_sub_type_id": {"type": "integer"},
             },
@@ -1246,10 +1247,12 @@ async def _h_rename_group(args): return await tp_rename_group(group_id=args["gro
 async def _h_delete_group(args): return await tp_delete_group(group_id=args["group_id"])
 
 @_handler("tp_add_athletes_to_group")
-async def _h_add_athletes_to_group(args): return await tp_add_athletes_to_group(group_id=args["group_id"], athlete_ids=args["athlete_ids"])
+async def _h_add_athletes_to_group(args):
+    return await tp_add_athletes_to_group(group_id=args["group_id"], athlete_ids=args["athlete_ids"])
 
 @_handler("tp_remove_athletes_from_group")
-async def _h_remove_athletes_from_group(args): return await tp_remove_athletes_from_group(group_id=args["group_id"], athlete_ids=args["athlete_ids"])
+async def _h_remove_athletes_from_group(args):
+    return await tp_remove_athletes_from_group(group_id=args["group_id"], athlete_ids=args["athlete_ids"])
 
 @_handler("tp_refresh_auth")
 async def _h_refresh_auth(args): return await tp_refresh_auth(browser=args.get("browser", "auto"))
