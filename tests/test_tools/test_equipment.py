@@ -1,5 +1,6 @@
 """Tests for equipment tools."""
 
+from copy import deepcopy
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,7 +12,6 @@ from tp_mcp.tools.equipment import (
     tp_get_equipment,
     tp_update_equipment,
 )
-
 
 MOCK_EQUIPMENT = [
     {"equipmentId": 1, "name": "Tarmac SL7", "equipmentType": 1, "brand": "Specialized",
@@ -58,8 +58,17 @@ class TestGetEquipment:
 class TestCreateEquipment:
     @pytest.mark.asyncio
     async def test_create_appends_with_null_id(self):
-        get_response = APIResponse(success=True, data=MOCK_EQUIPMENT.copy())
-        put_response = APIResponse(success=True, data=None)
+        get_response = APIResponse(success=True, data=deepcopy(MOCK_EQUIPMENT))
+        saved = deepcopy(MOCK_EQUIPMENT) + [
+            {
+                "equipmentId": 3,
+                "name": "New Bike",
+                "equipmentType": 1,
+                "brand": "Canyon",
+                "model": "",
+            }
+        ]
+        put_response = APIResponse(success=True, data=saved)
 
         with patch("tp_mcp.tools.equipment.TPClient") as mock_client:
             mock_instance = AsyncMock()
@@ -71,6 +80,7 @@ class TestCreateEquipment:
             result = await tp_create_equipment(name="New Bike", type="bike", brand="Canyon")
 
         assert result["success"] is True
+        assert result["equipment_id"] == "3"
         put_payload = mock_instance.put.call_args[1]["json"]
         assert len(put_payload) == 3  # 2 existing + 1 new
         new_item = put_payload[-1]
@@ -81,7 +91,19 @@ class TestCreateEquipment:
     @pytest.mark.asyncio
     async def test_create_converts_km_to_metres(self):
         get_response = APIResponse(success=True, data=[])
-        put_response = APIResponse(success=True, data=None)
+        put_response = APIResponse(
+            success=True,
+            data=[
+                {
+                    "equipmentId": 3,
+                    "name": "Used Bike",
+                    "equipmentType": 1,
+                    "brand": "",
+                    "model": "",
+                    "startingDistance": 2000000,
+                }
+            ],
+        )
 
         with patch("tp_mcp.tools.equipment.TPClient") as mock_client:
             mock_instance = AsyncMock()
@@ -101,7 +123,20 @@ class TestCreateEquipment:
     @pytest.mark.asyncio
     async def test_create_bike_with_wheels(self):
         get_response = APIResponse(success=True, data=[])
-        put_response = APIResponse(success=True, data=None)
+        put_response = APIResponse(
+            success=True,
+            data=[
+                {
+                    "equipmentId": 3,
+                    "name": "TT Bike",
+                    "equipmentType": 1,
+                    "brand": "",
+                    "model": "",
+                    "wheels": "Zipp 808",
+                    "crankLength": 172.5,
+                }
+            ],
+        )
 
         with patch("tp_mcp.tools.equipment.TPClient") as mock_client:
             mock_instance = AsyncMock()
@@ -127,12 +162,61 @@ class TestCreateEquipment:
         assert result["isError"] is True
         assert "bike" in result["message"].lower()
 
+    @pytest.mark.asyncio
+    async def test_create_rejects_phantom_success(self):
+        get_response = APIResponse(success=True, data=[])
+        put_response = APIResponse(success=True, data=[])
+
+        with patch("tp_mcp.tools.equipment.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(return_value=get_response)
+            mock_instance.put = AsyncMock(return_value=put_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_equipment(name="Discarded Bike", type="bike")
+
+        assert result["isError"] is True
+        assert result["error_code"] == "WRITE_NOT_CONFIRMED"
+
+    @pytest.mark.asyncio
+    async def test_create_verifies_with_readback_when_put_has_no_body(self):
+        initial_response = APIResponse(success=True, data=[])
+        saved_response = APIResponse(
+            success=True,
+            data=[
+                {
+                    "equipmentId": 3,
+                    "name": "Readback Bike",
+                    "equipmentType": 1,
+                    "brand": "",
+                    "model": "",
+                }
+            ],
+        )
+        put_response = APIResponse(success=True, data=None)
+
+        with patch("tp_mcp.tools.equipment.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(side_effect=[initial_response, saved_response])
+            mock_instance.put = AsyncMock(return_value=put_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_equipment(name="Readback Bike", type="bike")
+
+        assert result["success"] is True
+        assert result["equipment_id"] == "3"
+        assert mock_instance.get.call_count == 2
+
 
 class TestUpdateEquipment:
     @pytest.mark.asyncio
     async def test_update_merges(self):
-        get_response = APIResponse(success=True, data=MOCK_EQUIPMENT.copy())
-        put_response = APIResponse(success=True, data=None)
+        get_response = APIResponse(success=True, data=deepcopy(MOCK_EQUIPMENT))
+        saved = deepcopy(MOCK_EQUIPMENT)
+        saved[0]["name"] = "Updated Name"
+        put_response = APIResponse(success=True, data=saved)
 
         with patch("tp_mcp.tools.equipment.TPClient") as mock_client:
             mock_instance = AsyncMock()
@@ -148,8 +232,10 @@ class TestUpdateEquipment:
     @pytest.mark.asyncio
     async def test_retire_sets_date(self):
         equipment = [{"equipmentId": 1, "name": "Old", "equipmentType": 1, "retired": False}]
-        get_response = APIResponse(success=True, data=equipment)
-        put_response = APIResponse(success=True, data=None)
+        get_response = APIResponse(success=True, data=deepcopy(equipment))
+        saved = deepcopy(equipment)
+        saved[0]["retired"] = True
+        put_response = APIResponse(success=True, data=saved)
 
         with patch("tp_mcp.tools.equipment.TPClient") as mock_client:
             mock_instance = AsyncMock()
@@ -165,11 +251,29 @@ class TestUpdateEquipment:
         assert updated["retired"] is True
         assert "retiredDate" in updated
 
+    @pytest.mark.asyncio
+    async def test_update_rejects_phantom_success(self):
+        original = deepcopy(MOCK_EQUIPMENT)
+        get_response = APIResponse(success=True, data=deepcopy(original))
+        put_response = APIResponse(success=True, data=original)
+
+        with patch("tp_mcp.tools.equipment.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(return_value=get_response)
+            mock_instance.put = AsyncMock(return_value=put_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_update_equipment(equipment_id="1", name="Ignored")
+
+        assert result["isError"] is True
+        assert result["error_code"] == "WRITE_NOT_CONFIRMED"
+
 
 class TestDeleteEquipment:
     @pytest.mark.asyncio
     async def test_delete_removes_from_array(self):
-        get_response = APIResponse(success=True, data=MOCK_EQUIPMENT.copy())
+        get_response = APIResponse(success=True, data=deepcopy(MOCK_EQUIPMENT))
         put_response = APIResponse(success=True, data=None)
 
         with patch("tp_mcp.tools.equipment.TPClient") as mock_client:

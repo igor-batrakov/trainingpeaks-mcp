@@ -92,6 +92,9 @@ class CreateWorkoutInput(BaseModel):
     def check_duration_or_structure(self) -> "CreateWorkoutInput":
         if self.structure is not None and self.structured_workout is not None:
             raise ValueError("Provide only one of structure or structured_workout")
+        # DayOff can be created with no planned duration so TP leaves Duration blank.
+        if self.sport == "DayOff":
+            return self
         if (
             self.duration_minutes is None
             and self.structure is None

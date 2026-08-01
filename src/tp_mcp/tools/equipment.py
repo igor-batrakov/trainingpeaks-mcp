@@ -15,6 +15,33 @@ EQUIPMENT_TYPES = {"bike": 1, "shoe": 2}
 BIKE_ONLY_FIELDS = {"wheels", "crank_length_mm"}
 
 
+async def _confirmed_equipment_items(
+    client: TPClient,
+    endpoint: str,
+    write_response: Any,
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Read the equipment state returned by TP, falling back to a GET."""
+    raw_items = write_response.data
+    if not isinstance(raw_items, list):
+        readback = await client.get(endpoint)
+        if readback.is_error:
+            return None, readback.message or "Equipment verification request failed."
+        raw_items = readback.data
+
+    if not isinstance(raw_items, list) or not all(isinstance(item, dict) for item in raw_items):
+        return None, "TrainingPeaks returned an invalid equipment list after the write."
+    return raw_items, None
+
+
+def _equipment_id(item: dict[str, Any]) -> str | None:
+    value = item.get("equipmentId")
+    return str(value) if value is not None else None
+
+
+def _matches_equipment_fields(item: dict[str, Any], expected: dict[str, Any]) -> bool:
+    return all(item.get(key) == value for key, value in expected.items())
+
+
 class CreateEquipmentInput(BaseModel):
     """Validates input for equipment creation."""
 
@@ -242,6 +269,8 @@ async def tp_create_equipment(
         if params.crank_length_mm is not None:
             new_item["crankLength"] = params.crank_length_mm
 
+        previous_ids = {_equipment_id(item) for item in existing}
+
         # Append and PUT full array
         existing.append(new_item)
         put_response = await client.put(endpoint, json=existing)
@@ -253,9 +282,46 @@ async def tp_create_equipment(
                 "message": put_response.message,
             }
 
+        saved_items, verification_error = await _confirmed_equipment_items(
+            client, endpoint, put_response
+        )
+        if saved_items is None:
+            return {
+                "isError": True,
+                "error_code": "WRITE_NOT_CONFIRMED",
+                "message": verification_error,
+            }
+
+        identity_fields = {
+            "name": new_item["name"],
+            "equipmentType": new_item["equipmentType"],
+            "brand": new_item["brand"],
+            "model": new_item["model"],
+        }
+        created_item = next(
+            (
+                item
+                for item in saved_items
+                if _equipment_id(item) is not None
+                and _equipment_id(item) not in previous_ids
+                and _matches_equipment_fields(item, identity_fields)
+            ),
+            None,
+        )
+        if created_item is None:
+            return {
+                "isError": True,
+                "error_code": "WRITE_NOT_CONFIRMED",
+                "message": (
+                    "TrainingPeaks accepted the request but did not persist the new "
+                    "equipment item."
+                ),
+            }
+
         return {
             "success": True,
             "message": f"Equipment '{params.name}' created.",
+            "equipment_id": _equipment_id(created_item),
         }
 
 
@@ -333,6 +399,7 @@ async def tp_update_equipment(
 
         # Find and update the target item
         found = False
+        expected_updates: dict[str, Any] = {}
         for item in existing:
             if item.get("equipmentId") == params.equipment_id:
                 found = True
@@ -350,24 +417,33 @@ async def tp_update_equipment(
 
                 if params.name is not None:
                     item["name"] = params.name
+                    expected_updates["name"] = params.name
                 if params.brand is not None:
                     item["brand"] = params.brand
+                    expected_updates["brand"] = params.brand
                 if params.model is not None:
                     item["model"] = params.model
+                    expected_updates["model"] = params.model
                 if params.notes is not None:
                     item["notes"] = params.notes
+                    expected_updates["notes"] = params.notes
                 if params.retired is not None:
                     item["retired"] = params.retired
+                    expected_updates["retired"] = params.retired
                     if params.retired and not item.get("retiredDate"):
                         item["retiredDate"] = datetime.now().isoformat()
                 if params.is_default is not None:
                     item["isDefault"] = params.is_default
+                    expected_updates["isDefault"] = params.is_default
                 if params.max_distance_km is not None:
                     item["maxDistance"] = int(params.max_distance_km * 1000)
+                    expected_updates["maxDistance"] = int(params.max_distance_km * 1000)
                 if params.wheels is not None:
                     item["wheels"] = params.wheels
+                    expected_updates["wheels"] = params.wheels
                 if params.crank_length_mm is not None:
                     item["crankLength"] = params.crank_length_mm
+                    expected_updates["crankLength"] = params.crank_length_mm
                 break
 
         if not found:
@@ -385,6 +461,30 @@ async def tp_update_equipment(
                 "isError": True,
                 "error_code": put_response.error_code.value if put_response.error_code else "API_ERROR",
                 "message": put_response.message,
+            }
+
+        saved_items, verification_error = await _confirmed_equipment_items(
+            client, endpoint, put_response
+        )
+        if saved_items is None:
+            return {
+                "isError": True,
+                "error_code": "WRITE_NOT_CONFIRMED",
+                "message": verification_error,
+            }
+
+        saved_item = next(
+            (item for item in saved_items if _equipment_id(item) == str(params.equipment_id)),
+            None,
+        )
+        if saved_item is None or not _matches_equipment_fields(saved_item, expected_updates):
+            return {
+                "isError": True,
+                "error_code": "WRITE_NOT_CONFIRMED",
+                "message": (
+                    f"TrainingPeaks accepted the request but did not persist the changes "
+                    f"to equipment {params.equipment_id}."
+                ),
             }
 
         return {
