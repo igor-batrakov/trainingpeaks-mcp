@@ -52,6 +52,20 @@ def _extract_file_infos(raw_data: dict, key: str) -> list[dict]:
     return normalized
 
 
+def _workout_file_enumeration(details_response: Any) -> tuple[bool, dict[str, Any], str | None]:
+    """Return file metadata only when the details response is trustworthy."""
+    if not details_response.success:
+        return False, {}, details_response.message or "Workout details request failed."
+    if not isinstance(details_response.data, dict):
+        return False, {}, "Workout details response was not an object."
+
+    details = details_response.data
+    file_keys = ("workoutDeviceFileInfos", "attachmentFileInfos")
+    if not all(isinstance(details.get(key), list) for key in file_keys):
+        return False, details, "Workout details response did not contain valid file arrays."
+    return True, details, None
+
+
 def _prepare_structure_payload(
     structure: dict[str, Any] | str | None,
 ) -> StructurePayload:
@@ -312,10 +326,8 @@ async def tp_get_workout(workout_id: str) -> dict[str, Any]:
         # Fetch /details endpoint for file infos (not included in main endpoint)
         details_endpoint = f"/fitness/v6/athletes/{athlete_id}/workouts/{validated.workout_id}/details"
         details_response = await client.get(details_endpoint)
-        details_raw = (
-            details_response.data
-            if details_response.success and isinstance(details_response.data, dict)
-            else {}
+        file_enumeration_succeeded, details_raw, file_enumeration_error = (
+            _workout_file_enumeration(details_response)
         )
 
         try:
@@ -357,6 +369,8 @@ async def tp_get_workout(workout_id: str) -> dict[str, Any]:
                 "completed": workout.completed,
                 "structured_workout": structured_workout,
                 "workout_comments": workout_comments,
+                "file_enumeration_succeeded": file_enumeration_succeeded,
+                "file_enumeration_error": file_enumeration_error,
                 "device_files": _extract_file_infos(details_raw, "workoutDeviceFileInfos"),
                 "attachment_files": _extract_file_infos(details_raw, "attachmentFileInfos"),
             }
@@ -402,7 +416,8 @@ async def tp_create_workout(
         date_str: Workout date in ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS).
         sport: Sport type (see SPORT_TYPE_MAP for valid values).
         title: Workout title.
-        duration_minutes: Planned duration in minutes (optional if structure provided).
+        duration_minutes: Planned duration in minutes (optional if structure provided;
+            optional for DayOff so Duration can stay blank in TP).
         description: Optional workout description.
         distance_km: Optional planned distance in kilometres.
         tss_planned: Optional planned Training Stress Score.
@@ -668,7 +683,7 @@ async def tp_update_workout(
             existing["workoutTypeFamilyId"] = family_id
             existing["workoutTypeValueId"] = type_id
         if params.subtype_id is not None:
-            existing["workoutTypeValueId"] = params.subtype_id
+            existing["workoutSubTypeId"] = params.subtype_id
         if params.title is not None:
             existing["title"] = params.title
         if params.description is not None:
@@ -682,7 +697,12 @@ async def tp_update_workout(
                 if shifted_start is not None:
                     existing["startTimePlanned"] = shifted_start
         if effective_duration is not None:
-            existing["totalTimePlanned"] = effective_duration / 60.0
+            # 0 minutes clears planned duration so TP shows an empty Duration field
+            # (same as clearing Duration Planned in the UI), instead of writing 0:00:00.
+            if effective_duration == 0:
+                existing["totalTimePlanned"] = None
+            else:
+                existing["totalTimePlanned"] = effective_duration / 60.0
         if params.distance_km is not None:
             existing["distancePlanned"] = _km_to_m(params.distance_km)
         if effective_tss is not None:

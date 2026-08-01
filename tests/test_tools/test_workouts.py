@@ -197,7 +197,10 @@ class TestTpGetWorkout:
             {"id": 2, "comment": "Felt strong.", "isCoach": False},
         ]
         workout_response = APIResponse(success=True, data=workout_data)
-        details_response = APIResponse(success=True, data={})
+        details_response = APIResponse(
+            success=True,
+            data={"workoutDeviceFileInfos": [], "attachmentFileInfos": []},
+        )
 
         with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
             mock_instance = AsyncMock()
@@ -213,6 +216,8 @@ class TestTpGetWorkout:
         assert result["workout_comments"][0]["comment"] == "Great effort!"
         assert "coach_comments" not in result
         assert "athlete_comments" not in result
+        assert result["file_enumeration_succeeded"] is True
+        assert result["file_enumeration_error"] is None
         assert mock_instance.get.call_count == 2
 
     @pytest.mark.asyncio
@@ -226,7 +231,10 @@ class TestTpGetWorkout:
             "hasPrivateWorkoutNoteForCaller": True,
         })
         workout_response = APIResponse(success=True, data=workout_data)
-        details_response = APIResponse(success=True, data={})
+        details_response = APIResponse(
+            success=True,
+            data={"workoutDeviceFileInfos": [], "attachmentFileInfos": []},
+        )
 
         with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
             mock_instance = AsyncMock()
@@ -240,6 +248,70 @@ class TestTpGetWorkout:
         assert result["feeling"] == 3
         assert result["new_comment"] == "Felt controlled."
         assert result["has_private_workout_note"] is True
+
+    @pytest.mark.asyncio
+    async def test_get_workout_reports_verified_empty_file_lists(self, mock_api_responses):
+        workout_response = APIResponse(success=True, data=mock_api_responses["workout_detail"])
+        details_response = APIResponse(
+            success=True,
+            data={"workoutDeviceFileInfos": [], "attachmentFileInfos": []},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(side_effect=[workout_response, details_response])
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_get_workout("1001")
+
+        assert result["file_enumeration_succeeded"] is True
+        assert result["device_files"] == []
+        assert result["attachment_files"] == []
+
+    @pytest.mark.asyncio
+    async def test_get_workout_reports_file_enumeration_failure(self, mock_api_responses):
+        workout_response = APIResponse(success=True, data=mock_api_responses["workout_detail"])
+        details_response = APIResponse(
+            success=False,
+            error_code=ErrorCode.NETWORK_ERROR,
+            message="Details unavailable",
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(side_effect=[workout_response, details_response])
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_get_workout("1001")
+
+        assert result["file_enumeration_succeeded"] is False
+        assert result["file_enumeration_error"] == "Details unavailable"
+        assert result["device_files"] == []
+        assert result["attachment_files"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "details_data",
+        [None, [], {}, {"workoutDeviceFileInfos": {}, "attachmentFileInfos": []}],
+    )
+    async def test_get_workout_rejects_untrustworthy_file_metadata(
+        self, mock_api_responses, details_data
+    ):
+        workout_response = APIResponse(success=True, data=mock_api_responses["workout_detail"])
+        details_response = APIResponse(success=True, data=details_data)
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(side_effect=[workout_response, details_response])
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_get_workout("1001")
+
+        assert result["file_enumeration_succeeded"] is False
+        assert result["file_enumeration_error"]
 
     @pytest.mark.asyncio
     async def test_get_workout_not_found(self):
@@ -305,6 +377,36 @@ class TestTpCreateWorkout:
         assert payload["title"] == "Morning Run"
         assert payload["totalTimePlanned"] == 1.0  # 60 min -> 1.0 hours
         assert payload["isHidden"] is False
+
+    @pytest.mark.asyncio
+    async def test_create_dayoff_without_duration(self):
+        """DayOff may omit duration so TP leaves Duration Planned blank."""
+        create_response = APIResponse(
+            success=True,
+            data={
+                "workoutId": 5005,
+                "title": "ДО",
+                "workoutDay": "2026-07-13T00:00:00",
+            },
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=create_response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_workout(
+                date_str="2026-07-13",
+                sport="DayOff",
+                title="ДО",
+                description="Полный день без тренировки.",
+            )
+
+        assert result["success"] is True
+        payload = mock_instance.post.call_args[1]["json"]
+        assert payload["workoutTypeValueId"] == 7
+        assert "totalTimePlanned" not in payload
 
     @pytest.mark.asyncio
     async def test_create_workout_hidden(self):
