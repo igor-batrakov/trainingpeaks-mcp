@@ -62,9 +62,42 @@ async def validate_auth(cookie: str) -> AuthResult:
             )
 
             if response.status_code == 200:
-                data = response.json()
-                token_info = data.get("token", {})
+                try:
+                    data = response.json()
+                except ValueError:
+                    return AuthResult(
+                        status=AuthStatus.INVALID,
+                        message="Token endpoint returned invalid JSON. Please try again.",
+                    )
+
+                if not isinstance(data, dict):
+                    return AuthResult(
+                        status=AuthStatus.INVALID,
+                        message="Token endpoint returned an unexpected response. Please try again.",
+                    )
+
+                token_info = data.get("token")
+                if not isinstance(token_info, dict):
+                    status = (
+                        AuthStatus.EXPIRED
+                        if data.get("success") is False
+                        else AuthStatus.INVALID
+                    )
+                    return AuthResult(
+                        status=status,
+                        message=(
+                            "Session expired. Please re-authenticate."
+                            if status == AuthStatus.EXPIRED
+                            else "Token endpoint returned no token. Please try again."
+                        ),
+                    )
+
                 access_token = token_info.get("access_token")
+                if not access_token:
+                    return AuthResult(
+                        status=AuthStatus.INVALID,
+                        message="Token endpoint returned no access token. Please try again.",
+                    )
 
                 # Token endpoint only returns the token, not user info.
                 # Fetch user profile with the access token.

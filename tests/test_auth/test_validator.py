@@ -97,6 +97,42 @@ class TestValidateAuth:
             assert result.status == AuthStatus.EXPIRED
 
     @pytest.mark.asyncio
+    async def test_null_token_is_reported_as_expired(self):
+        """A 200 response with token=null must not crash auth validation."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": False, "token": None}
+
+        with patch("tp_mcp.auth.validator.httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await validate_auth("expired_cookie")
+
+            assert result.is_valid is False
+            assert result.status == AuthStatus.EXPIRED
+            assert "re-authenticate" in result.message
+
+    @pytest.mark.asyncio
+    async def test_missing_access_token_is_invalid(self):
+        """A malformed token object must return a status instead of raising."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"success": True, "token": {}}
+
+        with patch("tp_mcp.auth.validator.httpx.AsyncClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await validate_auth("some_cookie")
+
+            assert result.is_valid is False
+            assert result.status == AuthStatus.INVALID
+            assert "access token" in result.message
+
+    @pytest.mark.asyncio
     async def test_invalid_auth(self):
         """Test validation with invalid cookie."""
         mock_response = MagicMock()
