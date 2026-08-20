@@ -8,8 +8,11 @@ import httpx
 import pytest
 
 from tp_mcp.client.http import APIResponse
-from tp_mcp.client.models import WorkoutAnalysis, parse_workout_analysis
-from tp_mcp.tools.analyze import ANALYSIS_DATA_DIR, tp_analyze_workout
+from tp_mcp.client.models import parse_workout_analysis
+from tp_mcp.tools.analyze import (
+    _refetch_full_resolution,
+    tp_analyze_workout,
+)
 
 TEST_ATHLETE_ID = 123456
 TEST_ACCESS_TOKEN = "gAAAA_test_access_token_12345"
@@ -382,3 +385,192 @@ class TestTpAnalyzeWorkout:
                 assert headers["Authorization"] == f"Bearer {TEST_ACCESS_TOKEN}"
                 assert "Cookie" not in headers
                 assert call_kwargs.kwargs["json"] == {"workoutId": 3553733903}
+
+    @pytest.mark.asyncio
+    async def test_coarse_charts_refetched_in_windows_at_full_resolution(self):
+        """A downsampled full-span charts response triggers windowed refetches.
+
+        The charts endpoint caps full-span responses at ~1000 points, which
+        is lossy for NP/work computed from the saved time-series. Windowed
+        requests return true 1s data and must be stitched (boundary samples
+        deduped, order preserved).
+        """
+        span = 1800
+        meta = _sample_charts_response()["metadata"]
+        # 301 points over 1800s -> 6s cadence, clearly downsampled
+        coarse = [{"time": t, "Power": 100} for t in range(0, span + 1, 6)]
+
+        async def post(url, headers=None, json=None):
+            resp = MagicMock()
+            resp.status_code = 200
+            if url.endswith("/v2/analyze/summary"):
+                resp.json.return_value = _sample_summary_response()
+            elif url.endswith("/v2/analyze/charts"):
+                if json.get("stopOffsetSeconds") is not None:
+                    start, stop = json["startOffsetSeconds"], json["stopOffsetSeconds"]
+                    resp.json.return_value = {
+                        "metadata": meta,
+                        "data": [
+                            {"time": t, "Power": 200} for t in range(start, stop + 1)
+                        ],
+                    }
+                else:
+                    resp.json.return_value = {"metadata": meta, "data": coarse}
+            elif url.endswith("/v2/analyze/laps"):
+                resp.json.return_value = _sample_laps_response()
+            else:
+                raise AssertionError(f"Unexpected URL requested: {url}")
+            return resp
+
+        mock_client = _mock_tp_client()
+        with patch("tp_mcp.tools.analyze.TPClient") as mock_tp:
+            mock_tp.return_value.__aenter__.return_value = mock_client
+            with patch("tp_mcp.tools.analyze.httpx.AsyncClient") as mock_httpx:
+                mock_http_client = AsyncMock()
+                mock_http_client.post = AsyncMock(side_effect=post)
+                mock_httpx.return_value.__aenter__.return_value = mock_http_client
+
+                result = await tp_analyze_workout("3553733903")
+
+        assert not result.get("isError")
+        # Stitched 1s data, not the 301-point downsample
+        assert result["time_series_points"] == span + 1
+        assert result["time_series_resolution"] == "windowed"
+        saved = json.loads(Path(result["data_file"]).read_text())
+        times = [row["time"] for row in saved["data"]]
+        assert times == sorted(set(times))  # deduped and ordered
+        assert all(row["Power"] == 200 for row in saved["data"])
+        window_payloads = [
+            call.kwargs["json"]
+            for call in mock_http_client.post.call_args_list
+            if call.args[0].endswith("/v2/analyze/charts")
+            and "startOffsetSeconds" in call.kwargs["json"]
+        ]
+        assert window_payloads == [
+            {
+                "workoutId": 3553733903,
+                "startOffsetSeconds": 0,
+                "stopOffsetSeconds": 900,
+            },
+            {
+                "workoutId": 3553733903,
+                "startOffsetSeconds": 900,
+                "stopOffsetSeconds": 1800,
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_charts_window_failure_falls_back_to_downsample(self):
+        """If any windowed refetch fails, keep the initial downsampled data."""
+        span = 1800
+        meta = _sample_charts_response()["metadata"]
+        coarse = [{"time": t, "Power": 100} for t in range(0, span + 1, 6)]
+
+        async def post(url, headers=None, json=None):
+            resp = MagicMock()
+            if url.endswith("/v2/analyze/summary"):
+                resp.status_code = 200
+                resp.json.return_value = _sample_summary_response()
+            elif url.endswith("/v2/analyze/charts"):
+                if json.get("stopOffsetSeconds") is not None:
+                    resp.status_code = 500
+                    resp.json.return_value = None
+                else:
+                    resp.status_code = 200
+                    resp.json.return_value = {"metadata": meta, "data": coarse}
+            elif url.endswith("/v2/analyze/laps"):
+                resp.status_code = 200
+                resp.json.return_value = _sample_laps_response()
+            else:
+                raise AssertionError(f"Unexpected URL requested: {url}")
+            return resp
+
+        mock_client = _mock_tp_client()
+        with patch("tp_mcp.tools.analyze.TPClient") as mock_tp:
+            mock_tp.return_value.__aenter__.return_value = mock_client
+            with patch("tp_mcp.tools.analyze.httpx.AsyncClient") as mock_httpx:
+                mock_http_client = AsyncMock()
+                mock_http_client.post = AsyncMock(side_effect=post)
+                mock_httpx.return_value.__aenter__.return_value = mock_http_client
+
+                result = await tp_analyze_workout("3553733903")
+
+        assert not result.get("isError")
+        assert result["time_series_points"] == len(coarse)
+        assert result["time_series_resolution"] == "downsampled"
+
+    @pytest.mark.asyncio
+    async def test_fine_grained_charts_not_refetched(self):
+        """Charts data already at <=1.5s cadence must not trigger refetches."""
+        meta = _sample_charts_response()["metadata"]
+        fine = [{"time": t, "Power": 100} for t in range(0, 301)]  # 1s data
+
+        async def post(url, headers=None, json=None):
+            resp = MagicMock()
+            resp.status_code = 200
+            if url.endswith("/v2/analyze/summary"):
+                resp.json.return_value = _sample_summary_response()
+            elif url.endswith("/v2/analyze/charts"):
+                assert json.get("stopOffsetSeconds") is None, "unexpected refetch"
+                resp.json.return_value = {"metadata": meta, "data": fine}
+            elif url.endswith("/v2/analyze/laps"):
+                resp.json.return_value = _sample_laps_response()
+            else:
+                raise AssertionError(f"Unexpected URL requested: {url}")
+            return resp
+
+        mock_client = _mock_tp_client()
+        with patch("tp_mcp.tools.analyze.TPClient") as mock_tp:
+            mock_tp.return_value.__aenter__.return_value = mock_client
+            with patch("tp_mcp.tools.analyze.httpx.AsyncClient") as mock_httpx:
+                mock_http_client = AsyncMock()
+                mock_http_client.post = AsyncMock(side_effect=post)
+                mock_httpx.return_value.__aenter__.return_value = mock_http_client
+
+                result = await tp_analyze_workout("3553733903")
+
+        assert not result.get("isError")
+        assert result["time_series_points"] == 301
+        assert result["time_series_resolution"] == "native"
+
+    @pytest.mark.asyncio
+    async def test_window_refetch_uses_at_most_48_nonempty_windows(self):
+        span = 48 * 900
+        coarse = [{"time": t} for t in range(0, span + 1, 60)]
+
+        async def post(url, headers=None, json=None):
+            start = json["startOffsetSeconds"]
+            stop = json["stopOffsetSeconds"]
+            response = MagicMock(status_code=200)
+            response.json.return_value = {
+                "data": [{"time": start}, {"time": stop}]
+            }
+            return response
+
+        http_client = AsyncMock()
+        http_client.post = AsyncMock(side_effect=post)
+
+        rows, resolution = await _refetch_full_resolution(
+            http_client, {}, 123, coarse
+        )
+
+        assert resolution == "windowed"
+        assert len(rows) == 49
+        assert http_client.post.await_count == 48
+        last_payload = http_client.post.await_args_list[-1].kwargs["json"]
+        assert last_payload["startOffsetSeconds"] == span - 900
+        assert last_payload["stopOffsetSeconds"] == span
+
+    @pytest.mark.asyncio
+    async def test_window_refetch_skips_spans_over_request_limit(self):
+        span = 48 * 900 + 1
+        coarse = [{"time": 0}, {"time": span}]
+        http_client = AsyncMock()
+
+        rows, resolution = await _refetch_full_resolution(
+            http_client, {}, 123, coarse
+        )
+
+        assert rows is coarse
+        assert resolution == "downsampled"
+        http_client.post.assert_not_awaited()
