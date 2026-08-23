@@ -8,6 +8,7 @@ SECURITY NOTES:
 """
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -73,14 +74,39 @@ def extract_tp_cookie(browser: str | None = None) -> BrowserCookieResult:
 
         try:
             cj = func(domain_name=".trainingpeaks.com")
+            expired_at: list[str] = []
+            saw_expired_cookie = False
             for cookie in cj:
                 if cookie.name == "Production_tpAuth" and cookie.value:
+                    if cookie.is_expired():
+                        saw_expired_cookie = True
+                        if cookie.expires is not None:
+                            expiry = datetime.fromtimestamp(
+                                cookie.expires, tz=timezone.utc
+                            ).isoformat()
+                            expired_at.append(expiry)
+                        continue
                     return BrowserCookieResult(
                         success=True,
                         cookie=cookie.value,
                         browser=name,
                         message=f"Found cookie in {name}",
                     )
+            if saw_expired_cookie:
+                expiry_detail = (
+                    f"latest expired {max(expired_at)}"
+                    if expired_at
+                    else "expiry time unavailable"
+                )
+                return BrowserCookieResult(
+                    success=False,
+                    browser=name,
+                    message=(
+                        f"Found only expired TrainingPeaks cookies in {name} "
+                        f"({expiry_detail}). Log into TrainingPeaks "
+                        "and retry."
+                    ),
+                )
             return BrowserCookieResult(success=False, message=f"No TrainingPeaks cookie in {name}")
         except PermissionError:
             return BrowserCookieResult(
