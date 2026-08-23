@@ -52,18 +52,77 @@ def _extract_file_infos(raw_data: dict, key: str) -> list[dict]:
     return normalized
 
 
-def _workout_file_enumeration(details_response: Any) -> tuple[bool, dict[str, Any], str | None]:
-    """Return file metadata only when the details response is trustworthy."""
+def _workout_file_enumeration(
+    details_response: Any,
+) -> tuple[bool, dict[str, Any], str | None, str | None]:
+    """Validate workout file metadata and report stable provenance codes."""
     if not details_response.success:
-        return False, {}, details_response.message or "Workout details request failed."
+        error_code = (
+            f"DETAILS_{details_response.error_code.value}"
+            if details_response.error_code is not None
+            else "DETAILS_API_ERROR"
+        )
+        return (
+            False,
+            {},
+            details_response.message or "Workout details request failed.",
+            error_code,
+        )
     if not isinstance(details_response.data, dict):
-        return False, {}, "Workout details response was not an object."
+        return (
+            False,
+            {},
+            "Workout details response was not an object.",
+            "DETAILS_NON_OBJECT_PAYLOAD",
+        )
 
     details = details_response.data
-    file_keys = ("workoutDeviceFileInfos", "attachmentFileInfos")
-    if not all(isinstance(details.get(key), list) for key in file_keys):
-        return False, details, "Workout details response did not contain valid file arrays."
-    return True, details, None
+    device_field = "workoutDeviceFileInfos"
+    attachment_field = "attachmentFileInfos"
+    projection: dict[str, Any] = {}
+    missing_fields: list[str] = []
+
+    for field in (device_field, attachment_field):
+        if field not in details:
+            missing_fields.append(field)
+            projection[field] = []
+            continue
+
+        values = details[field]
+        if values is None:
+            projection[field] = []
+            continue
+        if not isinstance(values, list):
+            return (
+                False,
+                {},
+                "Workout details response contained a non-array file field.",
+                "DETAILS_NON_ARRAY_FILE_FIELD",
+            )
+        if any(not isinstance(value, dict) for value in values):
+            return (
+                False,
+                {},
+                "Workout details response contained a non-object file entry.",
+                "DETAILS_NON_OBJECT_FILE_ENTRY",
+            )
+        projection[field] = values
+
+    if missing_fields:
+        if len(missing_fields) == 2:
+            error_code = "DETAILS_MISSING_BOTH_FILE_FIELDS"
+        elif missing_fields[0] == device_field:
+            error_code = "DETAILS_MISSING_DEVICE_FILE_FIELD"
+        else:
+            error_code = "DETAILS_MISSING_ATTACHMENT_FILE_FIELD"
+        return (
+            False,
+            projection,
+            "Workout details response did not contain both file fields.",
+            error_code,
+        )
+
+    return True, projection, None, None
 
 
 def _prepare_structure_payload(
@@ -326,7 +385,12 @@ async def tp_get_workout(workout_id: str) -> dict[str, Any]:
         # Fetch /details endpoint for file infos (not included in main endpoint)
         details_endpoint = f"/fitness/v6/athletes/{athlete_id}/workouts/{validated.workout_id}/details"
         details_response = await client.get(details_endpoint)
-        file_enumeration_succeeded, details_raw, file_enumeration_error = (
+        (
+            file_enumeration_succeeded,
+            details_raw,
+            file_enumeration_error,
+            file_enumeration_error_code,
+        ) = (
             _workout_file_enumeration(details_response)
         )
 
@@ -366,11 +430,12 @@ async def tp_get_workout(workout_id: str) -> dict[str, Any]:
                     "elevation_gain": workout.elevation_gain,
                     "calories": workout.calories,
                 },
-                "completed": workout.completed,
+                "completed": workout.is_completed,
                 "structured_workout": structured_workout,
                 "workout_comments": workout_comments,
                 "file_enumeration_succeeded": file_enumeration_succeeded,
                 "file_enumeration_error": file_enumeration_error,
+                "file_enumeration_error_code": file_enumeration_error_code,
                 "device_files": _extract_file_infos(details_raw, "workoutDeviceFileInfos"),
                 "attachment_files": _extract_file_infos(details_raw, "attachmentFileInfos"),
             }

@@ -2,9 +2,10 @@
 
 from datetime import date
 
+import pytest
+
 from tp_mcp.client.models import (
     PeakData,
-    UserProfile,
     WorkoutDetail,
     WorkoutSummary,
     parse_user_profile,
@@ -150,6 +151,51 @@ class TestWorkoutDetail:
         assert workout.calories == 570
         assert workout.distance_actual == 30000.0
         assert workout.sport == "Bike"  # resolved from workoutTypeValueId
+
+    def test_missing_completion_without_actual_metrics_is_planned(self):
+        workout = parse_workout_detail({
+            "workoutId": 1004,
+            "workoutDay": "2026-08-03",
+            "workoutTypeValueId": 3,
+            "totalTimePlanned": 1200,
+        })
+
+        assert workout.completed is None
+        assert workout.is_completed is False
+
+    def test_explicit_true_is_completed(self):
+        workout = parse_workout_detail({
+            "workoutId": 1004,
+            "workoutDay": "2026-08-03",
+            "completed": True,
+        })
+
+        assert workout.is_completed is True
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("totalTime", 0),
+            ("tssActual", 0),
+            ("if", 0),
+            ("distance", 0),
+            ("powerAverage", 0),
+            ("normalizedPowerActual", 0),
+            ("heartRateAverage", 0),
+            ("cadenceAverage", 0),
+            ("elevationGain", 0),
+            ("calories", 0),
+        ],
+    )
+    def test_each_actual_metric_is_completion_evidence(self, field, value):
+        workout = parse_workout_detail({
+            "workoutId": 1005,
+            "workoutDay": "2026-08-03",
+            "completed": False,
+            field: value,
+        })
+
+        assert workout.is_completed is True
 
 
 class TestSportResolution:

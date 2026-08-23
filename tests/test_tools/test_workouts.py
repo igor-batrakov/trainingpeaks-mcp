@@ -266,8 +266,42 @@ class TestTpGetWorkout:
             result = await tp_get_workout("1001")
 
         assert result["file_enumeration_succeeded"] is True
+        assert result["file_enumeration_error_code"] is None
         assert result["device_files"] == []
         assert result["attachment_files"] == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "details_data",
+        [
+            {"workoutDeviceFileInfos": None, "attachmentFileInfos": None},
+            {
+                "workoutDeviceFileInfos": [{"fileId": 42, "fileName": "ride.fit"}],
+                "attachmentFileInfos": None,
+            },
+        ],
+    )
+    async def test_get_workout_accepts_nullable_file_arrays(
+        self, mock_api_responses, details_data
+    ):
+        workout_response = APIResponse(
+            success=True, data=mock_api_responses["workout_detail"]
+        )
+        details_response = APIResponse(success=True, data=details_data)
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(
+                side_effect=[workout_response, details_response]
+            )
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_get_workout("1001")
+
+        assert result["file_enumeration_succeeded"] is True
+        assert result["file_enumeration_error"] is None
+        assert result["file_enumeration_error_code"] is None
 
     @pytest.mark.asyncio
     async def test_get_workout_reports_file_enumeration_failure(self, mock_api_responses):
@@ -288,16 +322,33 @@ class TestTpGetWorkout:
 
         assert result["file_enumeration_succeeded"] is False
         assert result["file_enumeration_error"] == "Details unavailable"
+        assert result["file_enumeration_error_code"] == "DETAILS_NETWORK_ERROR"
         assert result["device_files"] == []
         assert result["attachment_files"] == []
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "details_data",
-        [None, [], {}, {"workoutDeviceFileInfos": {}, "attachmentFileInfos": []}],
+        ("details_data", "expected_code"),
+        [
+            (None, "DETAILS_NON_OBJECT_PAYLOAD"),
+            ([], "DETAILS_NON_OBJECT_PAYLOAD"),
+            ({}, "DETAILS_MISSING_BOTH_FILE_FIELDS"),
+            (
+                {"workoutDeviceFileInfos": {}, "attachmentFileInfos": []},
+                "DETAILS_NON_ARRAY_FILE_FIELD",
+            ),
+            (
+                {"workoutDeviceFileInfos": ["bad"], "attachmentFileInfos": []},
+                "DETAILS_NON_OBJECT_FILE_ENTRY",
+            ),
+            (
+                {"workoutDeviceFileInfos": []},
+                "DETAILS_MISSING_ATTACHMENT_FILE_FIELD",
+            ),
+        ],
     )
     async def test_get_workout_rejects_untrustworthy_file_metadata(
-        self, mock_api_responses, details_data
+        self, mock_api_responses, details_data, expected_code
     ):
         workout_response = APIResponse(success=True, data=mock_api_responses["workout_detail"])
         details_response = APIResponse(success=True, data=details_data)
@@ -312,6 +363,55 @@ class TestTpGetWorkout:
 
         assert result["file_enumeration_succeeded"] is False
         assert result["file_enumeration_error"]
+        assert result["file_enumeration_error_code"] == expected_code
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("completed", "actual_time", "expected"),
+        [
+            (None, None, False),
+            (False, None, False),
+            (True, None, True),
+            (None, 0, True),
+            (False, 0, True),
+        ],
+    )
+    async def test_get_workout_normalizes_completion_status(
+        self, mock_api_responses, completed, actual_time, expected
+    ):
+        workout_data = dict(mock_api_responses["workout_detail"])
+        workout_data["completed"] = completed
+        workout_data["totalTime"] = actual_time
+        for field in (
+            "tssActual",
+            "if",
+            "distance",
+            "powerAverage",
+            "normalizedPowerActual",
+            "heartRateAverage",
+            "cadenceAverage",
+            "elevationGain",
+            "calories",
+        ):
+            workout_data[field] = None
+
+        workout_response = APIResponse(success=True, data=workout_data)
+        details_response = APIResponse(
+            success=True,
+            data={"workoutDeviceFileInfos": [], "attachmentFileInfos": []},
+        )
+
+        with patch("tp_mcp.tools.workouts.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(
+                side_effect=[workout_response, details_response]
+            )
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_get_workout("1001")
+
+        assert result["completed"] is expected
 
     @pytest.mark.asyncio
     async def test_get_workout_not_found(self):
