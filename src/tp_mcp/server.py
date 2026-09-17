@@ -230,6 +230,15 @@ TOOLS = [
                     ),
                     "default": False,
                 },
+                "include_comments": {
+                    "type": "boolean",
+                    "description": (
+                        "Include each workout's comments (same objects as "
+                        "tp_get_workout_comments). Off by default: comment text "
+                        "can be long."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["start_date", "end_date"],
         },
@@ -1746,6 +1755,7 @@ async def _h_get_workouts(args):
         start_date=args["start_date"], end_date=args["end_date"],
         workout_filter=args.get("type", "all"),
         include_structure=args.get("include_structure", False),
+        include_comments=bool(args.get("include_comments", False)),
     )
 
 @_handler("tp_get_workout")

@@ -250,6 +250,7 @@ async def tp_get_workouts(
     end_date: str,
     workout_filter: Literal["all", "planned", "completed"] = "all",
     include_structure: bool = False,
+    include_comments: bool = False,
 ) -> dict[str, Any]:
     """Get workouts for a date range.
 
@@ -259,6 +260,11 @@ async def tp_get_workouts(
         workout_filter: Filter by status - "all", "planned", or "completed".
         include_structure: Include native workout-builder structures. Defaults to
             false because structures can make date-range responses very large.
+        include_comments: Also return each workout's ``comments`` (the same
+            raw ``workoutComments`` objects ``tp_get_workout_comments``
+            returns). The v6 calendar list already carries them, so this
+            costs nothing extra on the wire — but comment text can be long,
+            so it is opt-in to keep the default listing compact.
 
     Returns:
         Dict with workouts list, count, and date_range.
@@ -329,6 +335,14 @@ async def tp_get_workouts(
                     "tss_actual": w.tss_actual,
                     "tss_source": w.tss_source,
                     "description": w.description,
+                    # Additive fields (all present in the v6 list payload):
+                    "workout_type": w.workout_type,
+                    "start_time": w.start_time,
+                    "last_modified": w.last_modified,
+                    "rpe": w.rpe,
+                    "feeling": w.feeling,
+                    "comment_count": len(w.comments),
+                    **({"comments": w.comments} if include_comments else {}),
                 }
                 if include_structure:
                     workout_data["structured_workout"] = _decode_structured_workout(
