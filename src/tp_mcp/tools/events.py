@@ -3,7 +3,7 @@
 import logging
 from datetime import date as dt_date
 from datetime import timedelta
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -948,13 +948,18 @@ async def tp_get_availability(start_date: str, end_date: str) -> dict[str, Any]:
         }
 
 
-# Availability DTO verified live against TP (2026-07). The body identifies
+# Availability DTO verified live against TP (2026-09). The body identifies
 # the athlete via "personId" (numerically equal to the athlete id) — NOT
 # "athleteId": the server cross-checks it against the URL athlete id, and a
 # body where it fails to bind is rejected with 400 "AthleteId of request url
 # and AthleteId in body of request do not match". "type" is 1 = unavailable,
 # 2 = limited; limited entries list the sports that REMAIN available as TP
 # sport-type ids ("availableSportTypes", ids from /fitness/v6/workouttypes).
+# "limitedAvailability" is not authoritative and TP may return it as false
+# even for type 2 entries, so updates deliberately change only "type".
+# All six reason values below were verified with live create/delete requests.
+# Updates require the complete DTO: GET the item, merge changes, then PUT it
+# back to the same item endpoint. Partial PUT bodies are rejected by TP.
 _AVAILABILITY_SPORT_IDS = {
     "swim": 1,
     "bike": 2,
@@ -973,6 +978,48 @@ _AVAILABILITY_SPORT_IDS = {
     "other": 100,
 }
 
+AvailabilityReason = Literal[
+    "Appointment",
+    "Injury",
+    "Sick",
+    "Vacation",
+    "Work",
+    "Other",
+]
+AVAILABILITY_REASONS: tuple[AvailabilityReason, ...] = (
+    "Appointment",
+    "Injury",
+    "Sick",
+    "Vacation",
+    "Work",
+    "Other",
+)
+
+
+def _availability_sport_ids(sport_types: list[str] | None) -> list[int]:
+    """Convert availability sport names or numeric ids to TP ids."""
+    sport_ids: list[int] = []
+    for sport in sport_types or []:
+        if isinstance(sport, int) or (isinstance(sport, str) and sport.isdigit()):
+            sport_ids.append(int(sport))
+            continue
+        sport_id = _AVAILABILITY_SPORT_IDS.get(str(sport).strip().lower())
+        if sport_id is None:
+            raise ValueError(
+                f"Unknown sport type '{sport}'. Use a TP sport-type id or one of: "
+                + ", ".join(sorted(_AVAILABILITY_SPORT_IDS))
+            )
+        sport_ids.append(sport_id)
+    return sport_ids
+
+
+def _availability_validation_error(message: str) -> dict[str, Any]:
+    return {
+        "isError": True,
+        "error_code": "VALIDATION_ERROR",
+        "message": message,
+    }
+
 
 async def tp_create_availability(
     start_date: str,
@@ -980,6 +1027,7 @@ async def tp_create_availability(
     limited: bool = False,
     sport_types: list[str] | None = None,
     description: str | None = None,
+    reason: AvailabilityReason = "Other",
 ) -> dict[str, Any]:
     """Mark dates as unavailable or limited.
 
@@ -990,6 +1038,7 @@ async def tp_create_availability(
         sport_types: If limited, the sports that REMAIN available — names
             (e.g. "Run") or TP sport-type ids.
         description: Optional short label shown on the calendar entry.
+        reason: TrainingPeaks availability reason.
 
     Returns:
         Dict with confirmation or error.
@@ -1004,6 +1053,17 @@ async def tp_create_availability(
             "message": msg,
         }
 
+    if reason not in AVAILABILITY_REASONS:
+        return _availability_validation_error(
+            f"Unknown availability reason '{reason}'. Use one of: "
+            + ", ".join(AVAILABILITY_REASONS)
+        )
+
+    try:
+        sport_ids = _availability_sport_ids(sport_types)
+    except ValueError as exc:
+        return _availability_validation_error(str(exc))
+
     async with TPClient() as client:
         athlete_id = await client.ensure_athlete_id()
         if not athlete_id:
@@ -1013,31 +1073,12 @@ async def tp_create_availability(
                 "message": "Could not get athlete ID. Re-authenticate.",
             }
 
-        sport_ids: list[int] = []
-        for s in sport_types or []:
-            if isinstance(s, int) or (isinstance(s, str) and s.isdigit()):
-                sport_ids.append(int(s))
-                continue
-            sid = _AVAILABILITY_SPORT_IDS.get(str(s).strip().lower())
-            if sid is None:
-                return {
-                    "isError": True,
-                    "error_code": "VALIDATION_ERROR",
-                    "message": (
-                        f"Unknown sport type '{s}'. Use a TP sport-type id or one of: "
-                        + ", ".join(sorted(_AVAILABILITY_SPORT_IDS))
-                    ),
-                }
-            sport_ids.append(sid)
-
         payload: dict[str, Any] = {
             "personId": athlete_id,
             "startDate": f"{params.start_date.isoformat()}T00:00:00",
             "endDate": f"{params.end_date.isoformat()}T00:00:00",
             "type": 2 if limited else 1,
-            # "Other" is the only reason value verified against the live API;
-            # free-text context belongs in `description`.
-            "reason": "Other",
+            "reason": reason,
         }
         if description:
             payload["description"] = description
@@ -1064,6 +1105,142 @@ async def tp_create_availability(
             "start_date": start_date,
             "end_date": end_date,
             "limited": limited,
+            "reason": reason,
+        }
+
+
+async def tp_update_availability(
+    availability_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    limited: bool | None = None,
+    sport_types: list[str] | None = None,
+    description: str | None = None,
+    reason: AvailabilityReason | None = None,
+) -> dict[str, Any]:
+    """Update an availability entry while preserving unspecified fields."""
+    try:
+        validated = WorkoutIdInput(workout_id=availability_id)
+    except (ValidationError, ValueError) as exc:
+        message = format_validation_error(exc) if isinstance(exc, ValidationError) else str(exc)
+        return _availability_validation_error(message)
+
+    if all(
+        value is None
+        for value in (start_date, end_date, limited, sport_types, description, reason)
+    ):
+        return _availability_validation_error("Provide at least one field to update.")
+
+    if reason is not None and reason not in AVAILABILITY_REASONS:
+        return _availability_validation_error(
+            f"Unknown availability reason '{reason}'. Use one of: "
+            + ", ".join(AVAILABILITY_REASONS)
+        )
+
+    try:
+        sport_ids = (
+            _availability_sport_ids(sport_types) if sport_types is not None else None
+        )
+    except ValueError as exc:
+        return _availability_validation_error(str(exc))
+
+    async with TPClient() as client:
+        athlete_id = await client.ensure_athlete_id()
+        if not athlete_id:
+            return {
+                "isError": True,
+                "error_code": "AUTH_INVALID",
+                "message": "Could not get athlete ID. Re-authenticate.",
+            }
+
+        endpoint = (
+            f"/fitness/v1/athletes/{athlete_id}/availability/"
+            f"{validated.workout_id}"
+        )
+        get_response = await client.get(endpoint)
+        if get_response.is_error:
+            return {
+                "isError": True,
+                "error_code": (
+                    get_response.error_code.value
+                    if get_response.error_code
+                    else "API_ERROR"
+                ),
+                "message": get_response.message,
+            }
+        if not isinstance(get_response.data, dict):
+            return {
+                "isError": True,
+                "error_code": "API_ERROR",
+                "message": "TrainingPeaks returned invalid availability data.",
+            }
+
+        payload = dict(get_response.data)
+        payload["personId"] = athlete_id
+
+        current_start = str(payload.get("startDate", "")).split("T", 1)[0]
+        current_end = str(payload.get("endDate", "")).split("T", 1)[0]
+        if start_date is not None or end_date is not None:
+            if not current_start or not current_end:
+                return {
+                    "isError": True,
+                    "error_code": "API_ERROR",
+                    "message": "TrainingPeaks availability data has no date range.",
+                }
+            try:
+                dates = DateRangeInput(
+                    start_date=start_date or current_start,
+                    end_date=end_date or current_end,
+                )
+            except (ValidationError, ValueError) as exc:
+                message = (
+                    format_validation_error(exc)
+                    if isinstance(exc, ValidationError)
+                    else str(exc)
+                )
+                return _availability_validation_error(message)
+            current_start = dates.start_date.isoformat()
+            current_end = dates.end_date.isoformat()
+            payload["startDate"] = f"{current_start}T00:00:00"
+            payload["endDate"] = f"{current_end}T00:00:00"
+
+        current_limited = payload.get("type") == 2
+        final_limited = limited if limited is not None else current_limited
+        if sport_ids is not None and not final_limited:
+            return _availability_validation_error(
+                "sport_types can only be set when limited is true."
+            )
+        if limited is not None:
+            payload["type"] = 2 if limited else 1
+        if final_limited and sport_ids is not None:
+            payload["availableSportTypes"] = sport_ids
+        elif not final_limited:
+            payload["availableSportTypes"] = []
+
+        if description is not None:
+            payload["description"] = description
+        if reason is not None:
+            payload["reason"] = reason
+
+        put_response = await client.put(endpoint, json=payload)
+        if put_response.is_error:
+            return {
+                "isError": True,
+                "error_code": (
+                    put_response.error_code.value
+                    if put_response.error_code
+                    else "API_ERROR"
+                ),
+                "message": put_response.message,
+            }
+
+        return {
+            "success": True,
+            "availability_id": validated.workout_id,
+            "start_date": current_start,
+            "end_date": current_end,
+            "limited": final_limited,
+            "reason": payload.get("reason"),
         }
 
 

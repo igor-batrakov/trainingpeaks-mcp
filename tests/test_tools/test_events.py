@@ -18,6 +18,7 @@ from tp_mcp.tools.events import (
     tp_get_note,
     tp_get_note_comments,
     tp_list_notes,
+    tp_update_availability,
     tp_update_event,
     tp_update_note,
 )
@@ -295,6 +296,7 @@ class TestAvailability:
                 start_date="2026-04-01", end_date="2026-04-07",
                 limited=True, sport_types=["Run", "Swim"],
                 description="Holiday",
+                reason="Vacation",
             )
 
         assert result["success"] is True
@@ -304,8 +306,213 @@ class TestAvailability:
         assert payload["type"] == 2
         assert payload["availableSportTypes"] == [3, 1]
         assert payload["description"] == "Holiday"
+        assert payload["reason"] == "Vacation"
+        assert result["reason"] == "Vacation"
         assert "athleteId" not in payload
         assert "limited" not in payload
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "reason",
+        ["Appointment", "Injury", "Sick", "Vacation", "Work", "Other"],
+    )
+    async def test_create_accepts_availability_reasons(self, reason):
+        response = APIResponse(success=True, data={"availabilityId": 802})
+        with patch("tp_mcp.tools.events.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_availability(
+                start_date="2026-04-01",
+                end_date="2026-04-01",
+                reason=reason,
+            )
+
+        assert result["reason"] == reason
+        assert mock_instance.post.call_args.kwargs["json"]["reason"] == reason
+
+    @pytest.mark.asyncio
+    async def test_create_defaults_reason_to_other(self):
+        response = APIResponse(success=True, data={"availabilityId": 803})
+        with patch("tp_mcp.tools.events.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_availability(
+                start_date="2026-04-01",
+                end_date="2026-04-01",
+            )
+
+        assert result["reason"] == "Other"
+        assert mock_instance.post.call_args.kwargs["json"]["reason"] == "Other"
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_unknown_reason_before_api_call(self):
+        with patch("tp_mcp.tools.events.TPClient") as mock_client:
+            result = await tp_create_availability(
+                start_date="2026-04-01",
+                end_date="2026-04-01",
+                reason="Travel",  # type: ignore[arg-type]
+            )
+
+        assert result["isError"] is True
+        assert result["error_code"] == "VALIDATION_ERROR"
+        assert "Travel" in result["message"]
+        mock_client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_reason_uses_full_existing_payload(self):
+        existing = {
+            "availabilityId": 804,
+            "personId": 123,
+            "startDate": "2026-04-01T00:00:00",
+            "endDate": "2026-04-07T00:00:00",
+            "type": 1,
+            "reason": "Other",
+            "description": "Recovery",
+            "availableSportTypes": [],
+        }
+        with patch("tp_mcp.tools.events.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(
+                return_value=APIResponse(success=True, data=existing)
+            )
+            mock_instance.put = AsyncMock(
+                return_value=APIResponse(success=True, data=existing)
+            )
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_update_availability("804", reason="Work")
+
+        assert result == {
+            "success": True,
+            "availability_id": 804,
+            "start_date": "2026-04-01",
+            "end_date": "2026-04-07",
+            "limited": False,
+            "reason": "Work",
+        }
+        endpoint = "/fitness/v1/athletes/123/availability/804"
+        mock_instance.get.assert_awaited_once_with(endpoint)
+        payload = mock_instance.put.call_args.kwargs["json"]
+        assert payload == {**existing, "reason": "Work"}
+        mock_instance.put.assert_awaited_once_with(endpoint, json=payload)
+
+    @pytest.mark.asyncio
+    async def test_update_dates_limited_sports_and_description(self):
+        existing = {
+            "availabilityId": 805,
+            "personId": 123,
+            "startDate": "2026-04-01T00:00:00",
+            "endDate": "2026-04-07T00:00:00",
+            "type": 1,
+            "limitedAvailability": False,
+            "reason": "Vacation",
+            "description": "Old",
+            "availableSportTypes": [],
+        }
+        with patch("tp_mcp.tools.events.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(
+                return_value=APIResponse(success=True, data=existing)
+            )
+            mock_instance.put = AsyncMock(
+                return_value=APIResponse(success=True, data=existing)
+            )
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_update_availability(
+                "805",
+                start_date="2026-04-02",
+                limited=True,
+                sport_types=["Run", "1"],
+                description="",
+            )
+
+        payload = mock_instance.put.call_args.kwargs["json"]
+        assert payload["startDate"] == "2026-04-02T00:00:00"
+        assert payload["endDate"] == "2026-04-07T00:00:00"
+        assert payload["type"] == 2
+        assert payload["limitedAvailability"] is False
+        assert payload["availableSportTypes"] == [3, 1]
+        assert payload["description"] == ""
+        assert result["limited"] is True
+
+    @pytest.mark.asyncio
+    async def test_update_rejects_unknown_reason_before_api_call(self):
+        with patch("tp_mcp.tools.events.TPClient") as mock_client:
+            result = await tp_update_availability(
+                "804",
+                reason="Travel",  # type: ignore[arg-type]
+            )
+
+        assert result["error_code"] == "VALIDATION_ERROR"
+        assert "Travel" in result["message"]
+        mock_client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_requires_at_least_one_change(self):
+        with patch("tp_mcp.tools.events.TPClient") as mock_client:
+            result = await tp_update_availability("804")
+
+        assert result["error_code"] == "VALIDATION_ERROR"
+        assert "at least one" in result["message"]
+        mock_client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_returns_get_error_without_put(self):
+        with patch("tp_mcp.tools.events.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(
+                return_value=APIResponse(
+                    success=False,
+                    error_code=ErrorCode.NOT_FOUND,
+                    message="Not found",
+                )
+            )
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_update_availability("804", reason="Work")
+
+        assert result["error_code"] == "NOT_FOUND"
+        mock_instance.put.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_returns_put_error(self):
+        existing = {
+            "availabilityId": 804,
+            "personId": 123,
+            "startDate": "2026-04-01T00:00:00",
+            "endDate": "2026-04-07T00:00:00",
+            "type": 1,
+            "reason": "Other",
+        }
+        with patch("tp_mcp.tools.events.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(
+                return_value=APIResponse(success=True, data=existing)
+            )
+            mock_instance.put = AsyncMock(
+                return_value=APIResponse(
+                    success=False,
+                    error_code=ErrorCode.API_ERROR,
+                    message="Update failed",
+                )
+            )
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_update_availability("804", reason="Work")
+
+        assert result["error_code"] == "API_ERROR"
+        assert result["message"] == "Update failed"
 
 
 class TestGetNote:

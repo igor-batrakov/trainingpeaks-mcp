@@ -24,6 +24,7 @@ from tp_mcp.tools.events import (
     tp_get_note,
     tp_get_note_comments,
     tp_list_notes,
+    tp_update_availability,
     tp_update_event,
     tp_update_note,
 )
@@ -168,6 +169,7 @@ __all__ = [
     "tp_set_workout_note",
     "tp_unpair_workout",
     "tp_create_zones",
+    "tp_update_availability",
     "tp_update_equipment",
     "tp_update_event",
     "tp_update_note",

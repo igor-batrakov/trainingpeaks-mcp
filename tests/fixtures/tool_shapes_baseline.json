@@ -170,6 +170,7 @@
         "availability_id": "int",
         "end_date": "str",
         "limited": "bool",
+        "reason": "str",
         "start_date": "str",
         "success": "bool"
       }
@@ -1099,6 +1100,16 @@
     },
     "tp_unpair_workout": {
       "skipped": "deliberate: needs a device-paired workout"
+    },
+    "tp_update_availability": {
+      "shape": {
+        "availability_id": "int",
+        "end_date": "str",
+        "limited": "bool",
+        "reason": "str",
+        "start_date": "str",
+        "success": "bool"
+      }
     },
     "tp_update_equipment": {
       "skipped": "create reports success but returns no id and item never appears in the list - cannot target"
