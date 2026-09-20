@@ -88,6 +88,7 @@ class TestListTools:
             "tp_list_notes",
             "tp_get_availability",
             "tp_create_availability",
+            "tp_update_availability",
             "tp_delete_availability",
             "tp_get_libraries",
             "tp_get_library_items",
@@ -152,6 +153,41 @@ class TestListTools:
         assert props["include_structure"]["type"] == "boolean"
         assert props["include_structure"]["default"] is False
         assert "include_structure" not in get_workouts.input_schema["required"]
+
+    @pytest.mark.asyncio
+    async def test_create_availability_schema_includes_reason_enum(self):
+        tools = await list_tools()
+        create_availability = next(t for t in tools if t.name == "tp_create_availability")
+        reason = create_availability.input_schema["properties"]["reason"]
+
+        assert reason["enum"] == [
+            "Appointment",
+            "Injury",
+            "Sick",
+            "Vacation",
+            "Work",
+            "Other",
+        ]
+        assert reason["default"] == "Other"
+        assert "reason" not in create_availability.input_schema["required"]
+
+    @pytest.mark.asyncio
+    async def test_update_availability_schema_supports_partial_updates(self):
+        tools = await list_tools()
+        update_availability = next(t for t in tools if t.name == "tp_update_availability")
+        schema = update_availability.input_schema
+
+        assert schema["required"] == ["availability_id"]
+        assert schema["properties"]["reason"]["enum"] == [
+            "Appointment",
+            "Injury",
+            "Sick",
+            "Vacation",
+            "Work",
+            "Other",
+        ]
+        assert "default" not in schema["properties"]["reason"]
+        assert "athlete" in schema["properties"]
 
     @pytest.mark.asyncio
     async def test_update_workout_schema_includes_structured_workout(self):

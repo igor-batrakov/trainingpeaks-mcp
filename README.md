@@ -115,6 +115,7 @@ honoured exactly. They update a **threshold** (FTP / LTHR / threshold pace).
 | `tp_add_note_comment` | Add a comment to a note |
 | `tp_get_availability` | List unavailable/limited periods |
 | `tp_create_availability` | Mark dates as unavailable or limited |
+| `tp_update_availability` | Update dates, limits, description, or reason |
 | `tp_delete_availability` | Remove availability entry |
 
 ### Workout Library

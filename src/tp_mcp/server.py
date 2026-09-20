@@ -101,6 +101,7 @@ from tp_mcp.tools import (
     tp_search_exercises,
     tp_set_workout_note,
     tp_unpair_workout,
+    tp_update_availability,
     tp_update_equipment,
     tp_update_event,
     tp_update_ftp,
@@ -1073,8 +1074,51 @@ TOOLS = [
                     "type": "string",
                     "description": "Optional short label shown on the calendar entry",
                 },
+                "reason": {
+                    "type": "string",
+                    "enum": ["Appointment", "Injury", "Sick", "Vacation", "Work", "Other"],
+                    "default": "Other",
+                    "description": "Reason displayed on the TrainingPeaks calendar entry",
+                },
             },
             "required": ["start_date", "end_date"],
+        },
+    ),
+    Tool(
+        name="tp_update_availability",
+        description=(
+            "Update an existing availability entry. Only supplied fields are changed; "
+            "availability_id comes from tp_get_availability or the create response."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "availability_id": {"type": "string"},
+                "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "limited": {"type": "boolean"},
+                "sport_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "If limited, sports that REMAIN available — names or "
+                        "TP sport-type ids"
+                    ),
+                },
+                "description": {
+                    "type": "string",
+                    "description": (
+                        "Short label shown on the calendar entry; use an empty "
+                        "string to clear it"
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "enum": ["Appointment", "Injury", "Sick", "Vacation", "Work", "Other"],
+                    "description": "Reason displayed on the TrainingPeaks calendar entry",
+                },
+            },
+            "required": ["availability_id"],
         },
     ),
     Tool(
@@ -2002,6 +2046,19 @@ async def _h_create_avail(args):
         start_date=args["start_date"], end_date=args["end_date"],
         limited=args.get("limited", False), sport_types=args.get("sport_types"),
         description=args.get("description"),
+        reason=args.get("reason", "Other"),
+    )
+
+@_handler("tp_update_availability")
+async def _h_update_avail(args):
+    return await tp_update_availability(
+        availability_id=args["availability_id"],
+        start_date=args.get("start_date"),
+        end_date=args.get("end_date"),
+        limited=args.get("limited"),
+        sport_types=args.get("sport_types"),
+        description=args.get("description"),
+        reason=args.get("reason"),
     )
 
 @_handler("tp_delete_availability")

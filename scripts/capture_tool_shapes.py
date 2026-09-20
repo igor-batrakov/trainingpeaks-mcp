@@ -321,8 +321,26 @@ async def main(out_path: Path) -> int:
     await r.capture("tp_get_libraries")
 
     # --- availability scratch chain ------------------------------------------
-    av = await r.capture("tp_create_availability", {"start_date": D.format(10), "end_date": D.format(11), "limited": False})
+    av = await r.capture(
+        "tp_create_availability",
+        {
+            "start_date": D.format(10),
+            "end_date": D.format(11),
+            "limited": False,
+            "reason": "Appointment",
+        },
+    )
     av_id = str((av or {}).get("availability_id") or "") or None
+    if av_id:
+        await r.capture(
+            "tp_update_availability",
+            {"availability_id": av_id, "reason": "Work"},
+        )
+    else:
+        r.results.setdefault(
+            "tp_update_availability",
+            {"skipped": "scratch availability could not be created"},
+        )
     await r.capture("tp_get_availability", {"start_date": D.format(1), "end_date": D.format(28)})
 
     # --- strength scratch chain ----------------------------------------------
