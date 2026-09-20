@@ -297,18 +297,23 @@ async def main(out_path: Path) -> int:
     # --- library scratch chain -----------------------------------------------
     lib = await r.capture("tp_create_library", {"name": f"{SCRATCH} library"})
     lib_id = str((lib or {}).get("library_id") or "") or None
+    item_id = None
     sched_workout_id = None
     if lib_id:
         item = await r.capture(
             "tp_create_library_item",
             {"library_id": lib_id, "name": f"{SCRATCH} item", "sport_family_id": 2, "sport_type_id": 3,
-             "duration_hours": 1.0, "tss": 50},
+             "duration_hours": 1.0, "tss": 50, "if_planned": 0.7, "distance_meters": 30000},
         )
         item_id = str((item or {}).get("item_id") or "") or None
         if item_id:
             await r.capture("tp_get_library_items", {"library_id": lib_id})
             await r.capture("tp_get_library_item", {"library_id": lib_id, "item_id": item_id})
-            await r.capture("tp_update_library_item", {"library_id": lib_id, "item_id": item_id, "tss": 55})
+            await r.capture(
+                "tp_update_library_item",
+                {"library_id": lib_id, "item_id": item_id, "tss": 55,
+                 "if_planned": 0.75, "distance_meters": 32000},
+            )
             sched = await r.capture("tp_schedule_library_workout", {"library_id": lib_id, "item_id": item_id, "date": D.format(3)})
             sched_workout_id = str((sched or {}).get("workout_id") or "") or None
         else:
@@ -362,8 +367,17 @@ async def main(out_path: Path) -> int:
         if st_id:
             await r.capture("tp_get_strength_workout", {"workout_id": st_id})
             await r.capture("tp_get_strength_summary", {"workout_id": st_id})
+            await r.capture(
+                "tp_update_strength_workout",
+                {"workout_id": st_id, "title": f"{SCRATCH} strength updated"},
+            )
     if not st_id:
-        for t in ("tp_create_strength_workout", "tp_get_strength_workout", "tp_get_strength_summary"):
+        for t in (
+            "tp_create_strength_workout",
+            "tp_get_strength_workout",
+            "tp_get_strength_summary",
+            "tp_update_strength_workout",
+        ):
             r.results.setdefault(t, {"skipped": "scratch strength workout could not be created"})
 
     # --- settings round-trips (write current value back, unchanged) ----------
@@ -394,6 +408,11 @@ async def main(out_path: Path) -> int:
         await r.cleanup("tp_delete_availability", {"availability_id": av_id})
     if st_id:
         await r.cleanup("tp_delete_strength_workout", {"workout_id": st_id})
+    if item_id and lib_id:
+        await r.cleanup(
+            "tp_delete_library_item",
+            {"library_id": lib_id, "item_id": item_id},
+        )
     if lib_id:
         await r.cleanup("tp_delete_library", {"library_id": lib_id})
     if sched_workout_id:

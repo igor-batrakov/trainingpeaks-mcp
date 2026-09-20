@@ -50,6 +50,7 @@ from tp_mcp.tools import (
     tp_delete_event,
     tp_delete_group,
     tp_delete_library,
+    tp_delete_library_item,
     tp_delete_note,
     tp_delete_strength_workout,
     tp_delete_workout,
@@ -1211,13 +1212,22 @@ TOOLS = [
     Tool(
         name="tp_delete_library",
         description=(
-            "Permanently delete a library AND every template inside it - irreversible, and there is no per- "
-            "template delete. Schedule anything you want to keep first."
+            "Permanently delete a library AND every template inside it - irreversible. "
+            "To remove one template use tp_delete_library_item."
         ),
         input_schema={
             "type": "object",
             "properties": {"library_id": {"type": "string"}},
             "required": ["library_id"],
+        },
+    ),
+    Tool(
+        name="tp_delete_library_item",
+        description="Permanently delete one workout template from a library (irreversible).",
+        input_schema={
+            "type": "object",
+            "properties": {"library_id": {"type": "string"}, "item_id": {"type": "string"}},
+            "required": ["library_id", "item_id"],
         },
     ),
     Tool(
@@ -1240,6 +1250,16 @@ TOOLS = [
                 "tss": {"type": "number"},
                 "description": {"type": "string"},
                 "structure": {"type": "object", "description": "Interval structure (nested object)"},
+                "if_planned": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Planned intensity factor (e.g. 0.84); TP does not derive it from tss",
+                },
+                "distance_meters": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Planned distance in metres",
+                },
             },
             "required": ["library_id", "name", "sport_family_id", "sport_type_id"],
         },
@@ -1265,6 +1285,19 @@ TOOLS = [
                     ),
                 },
                 "workout_sub_type_id": {"type": "integer"},
+                "if_planned": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": (
+                        "Planned intensity factor; pass with tss when retargeting "
+                        "(TP keeps the old IF otherwise)"
+                    ),
+                },
+                "distance_meters": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Planned distance in metres",
+                },
             },
             "required": ["library_id", "item_id"],
         },
@@ -1590,6 +1623,7 @@ _DESTRUCTIVE_TOOLS = {
     "tp_delete_event",
     "tp_delete_group",
     "tp_delete_library",
+    "tp_delete_library_item",
     "tp_delete_note",
     "tp_delete_strength_workout",
     "tp_delete_workout",
@@ -2088,6 +2122,10 @@ async def _h_create_lib(args): return await tp_create_library(name=args["name"])
 @_handler("tp_delete_library")
 async def _h_delete_lib(args): return await tp_delete_library(library_id=args["library_id"])
 
+@_handler("tp_delete_library_item")
+async def _h_delete_lib_item(args):
+    return await tp_delete_library_item(library_id=args["library_id"], item_id=args["item_id"])
+
 @_handler("tp_create_library_item")
 async def _h_create_lib_item(args):
     return await tp_create_library_item(
@@ -2095,6 +2133,7 @@ async def _h_create_lib_item(args):
         sport_family_id=args["sport_family_id"], sport_type_id=args["sport_type_id"],
         duration_hours=args.get("duration_hours"), tss=args.get("tss"),
         description=args.get("description"), structure=args.get("structure"),
+        if_planned=args.get("if_planned"), distance_meters=args.get("distance_meters"),
     )
 
 @_handler("tp_update_library_item")
@@ -2106,6 +2145,7 @@ async def _h_update_lib_item(args):
         structure=args.get("structure"),
         workout_type_id=args.get("workout_type_id"),
         workout_sub_type_id=args.get("workout_sub_type_id"),
+        if_planned=args.get("if_planned"), distance_meters=args.get("distance_meters"),
     )
 
 @_handler("tp_schedule_library_workout")

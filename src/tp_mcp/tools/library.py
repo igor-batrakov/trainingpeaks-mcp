@@ -345,6 +345,24 @@ async def tp_delete_library(library_id: str) -> dict[str, Any]:
         }
 
 
+def _validate_library_item_metrics(
+    *,
+    if_planned: float | None,
+    distance_meters: float | None,
+) -> dict[str, Any] | None:
+    for field, value in (
+        ("if_planned", if_planned),
+        ("distance_meters", distance_meters),
+    ):
+        if value is not None and value < 0:
+            return {
+                "isError": True,
+                "error_code": "VALIDATION_ERROR",
+                "message": f"{field} must be non-negative.",
+            }
+    return None
+
+
 async def tp_create_library_item(
     library_id: str,
     name: str,
@@ -354,6 +372,8 @@ async def tp_create_library_item(
     tss: float | None = None,
     description: str | None = None,
     structure: dict[str, Any] | None = None,
+    if_planned: float | None = None,
+    distance_meters: float | None = None,
 ) -> dict[str, Any]:
     """Save a workout template to a library.
 
@@ -366,6 +386,11 @@ async def tp_create_library_item(
         tss: Optional planned TSS.
         description: Optional description.
         structure: Optional interval structure (nested object, NOT string).
+        if_planned: Optional planned intensity factor (e.g. 0.84). TP does
+            not derive it from ``tss``/``duration_hours``, so pass it when
+            you pass ``tss`` or the template shows a stale/empty IF.
+        distance_meters: Optional planned distance in metres (TP stores
+            ``distancePlanned`` in metres; it is not derived from structure).
 
     Returns:
         Dict with confirmation or error.
@@ -386,6 +411,13 @@ async def tp_create_library_item(
             "error_code": "VALIDATION_ERROR",
             "message": "Template name must not be empty.",
         }
+
+    metric_error = _validate_library_item_metrics(
+        if_planned=if_planned,
+        distance_meters=distance_meters,
+    )
+    if metric_error:
+        return metric_error
 
     async with TPClient() as client:
         athlete_id = await client.ensure_athlete_id()
@@ -410,6 +442,10 @@ async def tp_create_library_item(
             payload["totalTimePlanned"] = duration_hours
         if tss is not None:
             payload["tssPlanned"] = tss
+        if if_planned is not None:
+            payload["ifPlanned"] = if_planned
+        if distance_meters is not None:
+            payload["distancePlanned"] = distance_meters
         if description:
             payload["description"] = description
         if structure is not None:
@@ -449,6 +485,8 @@ async def tp_update_library_item(
     structure: dict[str, Any] | None = None,
     workout_type_id: int | None = None,
     workout_sub_type_id: int | None = None,
+    if_planned: float | None = None,
+    distance_meters: float | None = None,
 ) -> dict[str, Any]:
     """Edit a workout template.
 
@@ -463,6 +501,10 @@ async def tp_update_library_item(
         workout_type_id: Optional sport/workout type (1=swim, 2=bike, 3=run, ...).
             Use to set the sport on templates that were saved without one.
         workout_sub_type_id: Optional workout subtype id (e.g. 6=Indoor Bike).
+        if_planned: Optional planned intensity factor. Updating ``tss`` alone
+            leaves the stored IF untouched (TP does not recompute it), so pass
+            both when retargeting a template.
+        distance_meters: Optional planned distance in metres.
 
     Returns:
         Dict with confirmation or error.
@@ -477,6 +519,13 @@ async def tp_update_library_item(
             "error_code": "VALIDATION_ERROR",
             "message": msg,
         }
+
+    metric_error = _validate_library_item_metrics(
+        if_planned=if_planned,
+        distance_meters=distance_meters,
+    )
+    if metric_error:
+        return metric_error
 
     async with TPClient() as client:
         athlete_id = await client.ensure_athlete_id()
@@ -521,6 +570,10 @@ async def tp_update_library_item(
             existing["totalTimePlanned"] = duration_hours
         if tss is not None:
             existing["tssPlanned"] = tss
+        if if_planned is not None:
+            existing["ifPlanned"] = if_planned
+        if distance_meters is not None:
+            existing["distancePlanned"] = distance_meters
         if description is not None:
             existing["description"] = description
         if structure is not None:
@@ -546,6 +599,58 @@ async def tp_update_library_item(
         return {
             "success": True,
             "message": f"Library item {item_validated.workout_id} updated.",
+        }
+
+
+async def tp_delete_library_item(library_id: str, item_id: str) -> dict[str, Any]:
+    """Delete a single workout template from a library.
+
+    Irreversible. Workouts already scheduled from the template are copies
+    and stay on the calendar.
+
+    Args:
+        library_id: Library ID.
+        item_id: Item ID.
+
+    Returns:
+        Dict with confirmation or error.
+    """
+    try:
+        lib_validated = WorkoutIdInput(workout_id=library_id)
+        item_validated = WorkoutIdInput(workout_id=item_id)
+    except (ValidationError, ValueError) as e:
+        msg = format_validation_error(e) if isinstance(e, ValidationError) else str(e)
+        return {
+            "isError": True,
+            "error_code": "VALIDATION_ERROR",
+            "message": msg,
+        }
+
+    async with TPClient() as client:
+        athlete_id = await client.ensure_athlete_id()
+        if not athlete_id:
+            return {
+                "isError": True,
+                "error_code": "AUTH_INVALID",
+                "message": "Could not get athlete ID. Re-authenticate.",
+            }
+
+        endpoint = (
+            f"/exerciselibrary/v1/libraries/{lib_validated.workout_id}"
+            f"/items/{item_validated.workout_id}"
+        )
+        response = await client.delete(endpoint)
+
+        if response.is_error:
+            return {
+                "isError": True,
+                "error_code": response.error_code.value if response.error_code else "API_ERROR",
+                "message": response.message,
+            }
+
+        return {
+            "success": True,
+            "message": f"Library item {item_validated.workout_id} deleted.",
         }
 
 

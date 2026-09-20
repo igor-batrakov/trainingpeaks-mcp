@@ -5,11 +5,12 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from tp_mcp.client.context import athlete_override
-from tp_mcp.client.http import APIResponse
+from tp_mcp.client.http import APIResponse, ErrorCode
 from tp_mcp.tools.library import (
     tp_create_library,
     tp_create_library_item,
     tp_delete_library,
+    tp_delete_library_item,
     tp_get_libraries,
     tp_get_library_items,
     tp_schedule_library_workout,
@@ -531,5 +532,124 @@ class TestScheduleLibraryWorkoutBulk:
             )
 
         assert result["isError"] is True
+        assert result["error_code"] == "VALIDATION_ERROR"
+        mock_client.assert_not_called()
+
+
+class TestLibraryItemIfPlanned:
+    """`ifPlanned` is stored verbatim by TP and never derived from tss/duration,
+    so both create and update must be able to set it explicitly."""
+
+    @pytest.mark.asyncio
+    async def test_create_sends_if_planned(self):
+        response = APIResponse(success=True, data={"exerciseLibraryItemId": 30})
+        with patch("tp_mcp.tools.library.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.post = AsyncMock(return_value=response)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_create_library_item(
+                library_id="1", name="Threshold",
+                sport_family_id=2, sport_type_id=3,
+                tss=75.5, if_planned=0.84, distance_meters=2000,
+            )
+
+        assert result["success"] is True
+        payload = mock_instance.post.call_args[1]["json"]
+        assert payload["tssPlanned"] == 75.5
+        assert payload["ifPlanned"] == 0.84
+        assert payload["distancePlanned"] == 2000
+
+    @pytest.mark.asyncio
+    async def test_update_overwrites_stale_if_and_leaves_it_when_omitted(self):
+        existing = {"exerciseLibraryItemId": 31, "itemName": "T", "workoutTypeId": 2,
+                    "tssPlanned": 66.3, "ifPlanned": 0.79}
+        put_resp = APIResponse(success=True, data=None)
+        with patch("tp_mcp.tools.library.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.get = AsyncMock(return_value=APIResponse(success=True, data=[dict(existing)]))
+            mock_instance.put = AsyncMock(return_value=put_resp)
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            await tp_update_library_item(library_id="1", item_id="31", tss=75.5)
+            payload = mock_instance.put.call_args[1]["json"]
+            assert payload["ifPlanned"] == 0.79          # omitted → untouched (TP would keep it too)
+
+            mock_instance.get = AsyncMock(return_value=APIResponse(success=True, data=[dict(existing)]))
+            await tp_update_library_item(library_id="1", item_id="31", tss=75.5, if_planned=0.84)
+            payload = mock_instance.put.call_args[1]["json"]
+            assert payload["ifPlanned"] == 0.84
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("kwargs", "field"),
+        [
+            ({"if_planned": -0.1}, "if_planned"),
+            ({"distance_meters": -1}, "distance_meters"),
+        ],
+    )
+    async def test_create_rejects_negative_metrics_before_api(self, kwargs, field):
+        with patch("tp_mcp.tools.library.TPClient") as mock_client:
+            result = await tp_create_library_item(
+                library_id="1",
+                name="Invalid",
+                sport_family_id=2,
+                sport_type_id=3,
+                **kwargs,
+            )
+
+        assert result["error_code"] == "VALIDATION_ERROR"
+        assert field in result["message"]
+        mock_client.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_rejects_negative_metrics_before_api(self):
+        with patch("tp_mcp.tools.library.TPClient") as mock_client:
+            result = await tp_update_library_item(
+                library_id="1",
+                item_id="31",
+                distance_meters=-1,
+            )
+
+        assert result["error_code"] == "VALIDATION_ERROR"
+        assert "distance_meters" in result["message"]
+        mock_client.assert_not_called()
+
+
+class TestDeleteLibraryItem:
+    @pytest.mark.asyncio
+    async def test_delete_hits_item_endpoint(self):
+        with patch("tp_mcp.tools.library.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.delete = AsyncMock(return_value=APIResponse(success=True, data=None))
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_delete_library_item(library_id="1", item_id="20")
+
+        assert result["success"] is True
+        assert mock_instance.delete.call_args[0][0] == "/exerciselibrary/v1/libraries/1/items/20"
+
+    @pytest.mark.asyncio
+    async def test_delete_surfaces_api_error(self):
+        with patch("tp_mcp.tools.library.TPClient") as mock_client:
+            mock_instance = AsyncMock()
+            mock_instance.ensure_athlete_id = AsyncMock(return_value=123)
+            mock_instance.delete = AsyncMock(return_value=APIResponse(
+                success=False, error_code=ErrorCode.NOT_FOUND, message="gone"))
+            mock_client.return_value.__aenter__.return_value = mock_instance
+
+            result = await tp_delete_library_item(library_id="1", item_id="20")
+
+        assert result["isError"] is True
+        assert result["error_code"] == "NOT_FOUND"
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_invalid_ids_before_api(self):
+        with patch("tp_mcp.tools.library.TPClient") as mock_client:
+            result = await tp_delete_library_item(library_id="0", item_id="20")
+
         assert result["error_code"] == "VALIDATION_ERROR"
         mock_client.assert_not_called()
