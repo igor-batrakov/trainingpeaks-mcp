@@ -1252,9 +1252,14 @@ TOOLS = [
                 "structure": {"type": "object", "description": "Interval structure (nested object)"},
                 "if_planned": {
                     "type": "number",
+                    "minimum": 0,
                     "description": "Planned intensity factor (e.g. 0.84); TP does not derive it from tss",
                 },
-                "distance_meters": {"type": "number", "description": "Planned distance in metres"},
+                "distance_meters": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Planned distance in metres",
+                },
             },
             "required": ["library_id", "name", "sport_family_id", "sport_type_id"],
         },
@@ -1282,12 +1287,17 @@ TOOLS = [
                 "workout_sub_type_id": {"type": "integer"},
                 "if_planned": {
                     "type": "number",
+                    "minimum": 0,
                     "description": (
                         "Planned intensity factor; pass with tss when retargeting "
                         "(TP keeps the old IF otherwise)"
                     ),
                 },
-                "distance_meters": {"type": "number", "description": "Planned distance in metres"},
+                "distance_meters": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "Planned distance in metres",
+                },
             },
             "required": ["library_id", "item_id"],
         },

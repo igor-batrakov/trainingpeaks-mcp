@@ -345,6 +345,24 @@ async def tp_delete_library(library_id: str) -> dict[str, Any]:
         }
 
 
+def _validate_library_item_metrics(
+    *,
+    if_planned: float | None,
+    distance_meters: float | None,
+) -> dict[str, Any] | None:
+    for field, value in (
+        ("if_planned", if_planned),
+        ("distance_meters", distance_meters),
+    ):
+        if value is not None and value < 0:
+            return {
+                "isError": True,
+                "error_code": "VALIDATION_ERROR",
+                "message": f"{field} must be non-negative.",
+            }
+    return None
+
+
 async def tp_create_library_item(
     library_id: str,
     name: str,
@@ -393,6 +411,13 @@ async def tp_create_library_item(
             "error_code": "VALIDATION_ERROR",
             "message": "Template name must not be empty.",
         }
+
+    metric_error = _validate_library_item_metrics(
+        if_planned=if_planned,
+        distance_meters=distance_meters,
+    )
+    if metric_error:
+        return metric_error
 
     async with TPClient() as client:
         athlete_id = await client.ensure_athlete_id()
@@ -494,6 +519,13 @@ async def tp_update_library_item(
             "error_code": "VALIDATION_ERROR",
             "message": msg,
         }
+
+    metric_error = _validate_library_item_metrics(
+        if_planned=if_planned,
+        distance_meters=distance_meters,
+    )
+    if metric_error:
+        return metric_error
 
     async with TPClient() as client:
         athlete_id = await client.ensure_athlete_id()

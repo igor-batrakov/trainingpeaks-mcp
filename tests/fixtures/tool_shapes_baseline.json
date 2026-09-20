@@ -1,6 +1,6 @@
 {
   "mcp_sdk_version": "1.26.0",
-  "tool_count": 84,
+  "tool_count": 87,
   "tools": {
     "tp_add_athletes_to_group": {
       "skipped": "scratch group could not be created"
@@ -255,6 +255,12 @@
       "skipped": "not reached by the capture plan - extend scripts/capture_tool_shapes.py"
     },
     "tp_delete_library": {
+      "shape": {
+        "message": "str",
+        "success": "bool"
+      }
+    },
+    "tp_delete_library_item": {
       "shape": {
         "message": "str",
         "success": "bool"
@@ -1150,6 +1156,20 @@
     },
     "tp_update_speed_zones": {
       "skipped": "deliberate: cannot safely round-trip current threshold paces as input strings"
+    },
+    "tp_update_strength_workout": {
+      "shape": {
+        "blocks_after": "int",
+        "blocks_before": "int",
+        "changed": [
+          "str"
+        ],
+        "completed_sets": "int",
+        "sets_after": "int",
+        "sets_before": "int",
+        "title": "str",
+        "workout_id": "str"
+      }
     },
     "tp_update_workout": {
       "shape": {

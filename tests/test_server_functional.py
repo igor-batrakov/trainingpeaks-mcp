@@ -191,6 +191,19 @@ class TestListTools:
         assert "athlete" in schema["properties"]
 
     @pytest.mark.asyncio
+    async def test_library_item_metric_schemas_are_non_negative(self):
+        tools = await list_tools()
+        by_name = {tool.name: tool for tool in tools}
+
+        for tool_name in ("tp_create_library_item", "tp_update_library_item"):
+            properties = by_name[tool_name].input_schema["properties"]
+            assert properties["if_planned"]["minimum"] == 0
+            assert properties["distance_meters"]["minimum"] == 0
+
+        delete_item = by_name["tp_delete_library_item"]
+        assert delete_item.input_schema["required"] == ["library_id", "item_id"]
+
+    @pytest.mark.asyncio
     async def test_update_workout_schema_includes_structured_workout(self):
         tools = await list_tools()
         uw = next(t for t in tools if t.name == "tp_update_workout")
