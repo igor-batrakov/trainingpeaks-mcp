@@ -95,13 +95,17 @@ class CreateWorkoutInput(BaseModel):
         # DayOff can be created with no planned duration so TP leaves Duration blank.
         if self.sport == "DayOff":
             return self
+        # A distance alone is a complete planned workout too (a race leg: 10 km,
+        # no target time) — TP stores distancePlanned without totalTimePlanned.
         if (
             self.duration_minutes is None
+            and self.distance_km is None
             and self.structure is None
             and self.structured_workout is None
         ):
             raise ValueError(
-                "Either duration_minutes, structure, or structured_workout must be provided",
+                "Either duration_minutes, distance_km, structure, or "
+                "structured_workout must be provided",
             )
         return self
 
