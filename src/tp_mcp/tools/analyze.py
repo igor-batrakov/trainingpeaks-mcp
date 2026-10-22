@@ -186,7 +186,13 @@ def _row_time(row: dict[str, Any]) -> float | None:
 def _stitch_windows(
     windows: list[list[dict[str, Any]]],
 ) -> list[dict[str, Any]] | None:
-    """Merge chart windows by time, or reject malformed window data."""
+    """Merge chart windows by time, or reject malformed window data.
+
+    ``Distance`` is accumulated, but a window that starts while the watch is
+    paused returns it as 0 until the next real sample — stitched as-is, the
+    series drops to 0 and jumps back by the whole distance so far, which reads
+    as a GPS jump downstream. Within the stitched series it never decreases.
+    """
     by_time: dict[float, dict[str, Any]] = {}
     for rows in windows:
         if not rows:
@@ -196,7 +202,19 @@ def _stitch_windows(
             if time_value is None:
                 return None
             by_time.setdefault(time_value, row)
-    return [by_time[time_value] for time_value in sorted(by_time)]
+
+    merged: list[dict[str, Any]] = []
+    top: float | None = None
+    for time_value in sorted(by_time):
+        row = by_time[time_value]
+        distance = row.get("Distance")
+        if isinstance(distance, (int, float)) and not isinstance(distance, bool):
+            if top is not None and distance < top:
+                row = {**row, "Distance": top}
+            else:
+                top = float(distance)
+        merged.append(row)
+    return merged
 
 
 async def _refetch_full_resolution(
