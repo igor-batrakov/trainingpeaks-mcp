@@ -13,6 +13,9 @@ from tp_mcp.auth import get_credential_async
 
 logger = logging.getLogger("tp-mcp")
 
+# /users/v3/user (profile + coach roster) cache lifetime, see _get_user_data.
+USER_DATA_TTL_S = 900.0
+
 TP_API_BASE = "https://tpapi.trainingpeaks.com"
 DEFAULT_TIMEOUT = 30.0
 MIN_REQUEST_INTERVAL = 0.15  # 150ms between requests to avoid rate limiting
@@ -144,6 +147,7 @@ class TPClient:
     # Class-level caches: persist across instances within the MCP server process
     _cached_athlete_id: int | None = None
     _cached_user_data: dict | None = None
+    _cached_user_data_at: float = 0.0
     _shared_token_cache: TokenCache | None = None
 
     @classmethod
@@ -308,8 +312,17 @@ class TPClient:
             if not result.success:
                 return result
 
-            # Cache the token
-            token_data = result.data["token"]  # type: ignore[index, call-overload]
+            # Cache the token. TP occasionally answers 200 with
+            # ``"token": null`` (transient, see auth/validator.py) — surface
+            # it as a retryable network error instead of a TypeError.
+            token_data = (result.data or {}).get("token")  # type: ignore[union-attr]
+            if not isinstance(token_data, dict) or not token_data.get("access_token"):
+                return APIResponse(
+                    success=False,
+                    error_code=ErrorCode.NETWORK_ERROR,
+                    message=("TrainingPeaks token endpoint returned no access "
+                             "token (transient) — retry the request."),
+                )
             self._token_cache.access_token = token_data["access_token"]
             expires_in = token_data.get("expires_in", 3600)
             self._token_cache.expires_at = time.time() + expires_in
@@ -598,18 +611,73 @@ class TPClient:
         """Set the athlete ID."""
         self._athlete_id = value
 
-    async def _get_user_data(self) -> dict | None:
-        """Get user data, using class-level cache to avoid redundant API calls."""
-        if TPClient._cached_user_data is not None:
-            return TPClient._cached_user_data
+    async def _get_user_data(self, *, fresh: bool = False) -> dict | None:
+        """Get user data, using class-level cache to avoid redundant API calls.
+
+        The payload carries the coach's roster, and the server process can live
+        for days: without expiry an athlete who connected after the first call
+        stayed invisible until a restart — re-login and tp_refresh_auth did not
+        help (#175). A failed refetch keeps serving the stale copy.
+        """
+        cached = TPClient._cached_user_data
+        if (not fresh and cached is not None
+                and time.monotonic() - TPClient._cached_user_data_at < USER_DATA_TTL_S):
+            return cached
 
         response = await self.get("/users/v3/user")
         if not response.success or not response.data:
-            return None
+            return cached
 
         user_data = response.data.get("user", response.data)
         TPClient._cached_user_data = user_data
+        TPClient._cached_user_data_at = time.monotonic()
         return user_data
+
+    @staticmethod
+    def _match_athlete(athletes: list, athlete: str) -> int | None:
+        """Resolve an explicit athlete name or ID against the coach's roster."""
+        athlete_id = None
+        # Resolve by explicit athlete name or ID
+        try:
+            target_id = int(athlete)
+            for a in athletes:
+                if a.get("athleteId") == target_id:
+                    athlete_id = target_id
+                    break
+        except ValueError:
+            # Search by name (case-insensitive), detecting ambiguity.
+            # TP's own firstName/lastName fields sometimes carry stray
+            # whitespace (seen live: lastName="Chervontsev " with a
+            # trailing space, and firstName="kairat " which makes the
+            # composed full name "kairat  pazylbekov" — note the DOUBLE
+            # space). Callers, in turn, often hold the name exactly as
+            # some earlier listing rendered it, doubled space and all.
+            # Collapse whitespace RUNS on both sides, not just trim the
+            # ends: trimming alone fixes the trailing-space profile but
+            # then turns "kairat  pazylbekov" into a single-space name
+            # that no longer matches the caller's doubled-space copy.
+            search = _collapse_ws(athlete)
+            matches = []
+            for a in athletes:
+                first = _collapse_ws(a.get("firstName"))
+                last = _collapse_ws(a.get("lastName"))
+                full = _collapse_ws(f"{first} {last}")
+                if search in (first, last, full):
+                    matches.append(a)
+
+            if len(matches) == 1:
+                athlete_id = matches[0].get("athleteId")
+            elif len(matches) > 1:
+                names = [
+                    f"{a.get('firstName', '')} {a.get('lastName', '')} (ID: {a.get('athleteId')})"
+                    for a in matches
+                ]
+                raise ValueError(
+                    f"Ambiguous athlete name '{athlete}' matches {len(matches)} athletes: "
+                    + ", ".join(names)
+                    + ". Use full name or athlete ID to disambiguate."
+                ) from None
+        return athlete_id
 
     async def ensure_athlete_id(self) -> int | None:
         """Get athlete ID, resolving coach athlete targeting via context var.
@@ -644,46 +712,12 @@ class TPClient:
         athlete_id = None
 
         if athlete is not None:
-            # Resolve by explicit athlete name or ID
-            try:
-                target_id = int(athlete)
-                for a in athletes:
-                    if a.get("athleteId") == target_id:
-                        athlete_id = target_id
-                        break
-            except ValueError:
-                # Search by name (case-insensitive), detecting ambiguity.
-                # TP's own firstName/lastName fields sometimes carry stray
-                # whitespace (seen live: lastName="Chervontsev " with a
-                # trailing space, and firstName="kairat " which makes the
-                # composed full name "kairat  pazylbekov" — note the DOUBLE
-                # space). Callers, in turn, often hold the name exactly as
-                # some earlier listing rendered it, doubled space and all.
-                # Collapse whitespace RUNS on both sides, not just trim the
-                # ends: trimming alone fixes the trailing-space profile but
-                # then turns "kairat  pazylbekov" into a single-space name
-                # that no longer matches the caller's doubled-space copy.
-                search = _collapse_ws(athlete)
-                matches = []
-                for a in athletes:
-                    first = _collapse_ws(a.get("firstName"))
-                    last = _collapse_ws(a.get("lastName"))
-                    full = _collapse_ws(f"{first} {last}")
-                    if search in (first, last, full):
-                        matches.append(a)
-
-                if len(matches) == 1:
-                    athlete_id = matches[0].get("athleteId")
-                elif len(matches) > 1:
-                    names = [
-                        f"{a.get('firstName', '')} {a.get('lastName', '')} (ID: {a.get('athleteId')})"
-                        for a in matches
-                    ]
-                    raise ValueError(
-                        f"Ambiguous athlete name '{athlete}' matches {len(matches)} athletes: "
-                        + ", ".join(names)
-                        + ". Use full name or athlete ID to disambiguate."
-                    ) from None
+            athlete_id = self._match_athlete(athletes, athlete)
+            if athlete_id is None:
+                # Roster may predate the athlete's connection (#175): refetch once.
+                fresh = await self._get_user_data(fresh=True)
+                if fresh:
+                    athlete_id = self._match_athlete(fresh.get("athletes", []), athlete)
         elif athletes:
             # Default: find the coach's own athlete entry
             for a in athletes:

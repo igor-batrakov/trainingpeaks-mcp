@@ -250,6 +250,7 @@ async def tp_get_workouts(
     end_date: str,
     workout_filter: Literal["all", "planned", "completed"] = "all",
     include_structure: bool = False,
+    include_comments: bool = False,
 ) -> dict[str, Any]:
     """Get workouts for a date range.
 
@@ -259,6 +260,11 @@ async def tp_get_workouts(
         workout_filter: Filter by status - "all", "planned", or "completed".
         include_structure: Include native workout-builder structures. Defaults to
             false because structures can make date-range responses very large.
+        include_comments: Also return each workout's ``comments`` (the same
+            raw ``workoutComments`` objects ``tp_get_workout_comments``
+            returns). The v6 calendar list already carries them, so this
+            costs nothing extra on the wire — but comment text can be long,
+            so it is opt-in to keep the default listing compact.
 
     Returns:
         Dict with workouts list, count, and date_range.
@@ -329,6 +335,14 @@ async def tp_get_workouts(
                     "tss_actual": w.tss_actual,
                     "tss_source": w.tss_source,
                     "description": w.description,
+                    # Additive fields (all present in the v6 list payload):
+                    "workout_type": w.workout_type,
+                    "start_time": w.start_time,
+                    "last_modified": w.last_modified,
+                    "rpe": w.rpe,
+                    "feeling": w.feeling,
+                    "comment_count": len(w.comments),
+                    **({"comments": w.comments} if include_comments else {}),
                 }
                 if include_structure:
                     workout_data["structured_workout"] = _decode_structured_workout(
@@ -440,6 +454,7 @@ async def tp_get_workout(workout_id: str) -> dict[str, Any]:
                     "avg_power": workout.avg_power,
                     "normalized_power": workout.normalized_power,
                     "avg_hr": workout.avg_hr,
+                    "max_hr": workout.max_hr,
                     "avg_cadence": workout.avg_cadence,
                     "elevation_gain": workout.elevation_gain,
                     "calories": workout.calories,
@@ -495,8 +510,9 @@ async def tp_create_workout(
         date_str: Workout date in ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS).
         sport: Sport type (see SPORT_TYPE_MAP for valid values).
         title: Workout title.
-        duration_minutes: Planned duration in minutes (optional if structure provided;
-            optional for DayOff so Duration can stay blank in TP).
+        duration_minutes: Planned duration in minutes (optional if distance_km or
+            structure is provided — a race leg is usually distance only; optional
+            for DayOff so Duration can stay blank in TP).
         description: Optional workout description.
         distance_km: Optional planned distance in kilometres.
         tss_planned: Optional planned Training Stress Score.
@@ -1349,6 +1365,77 @@ async def tp_unpair_workout(workout_id: str) -> dict[str, Any]:
             "completed_workouts": completed,
             "planned_workout": planned,
         }
+
+
+#: Write values of the ``recalctss`` command. Only ``heartRate`` is confirmed on the
+#: wire (upstream issue #70: ~900 workouts converted, 0 failures); other models
+#: (power, pace) are not captured yet, so they are not offered.
+_RECALC_TSS_SOURCES = ("heartRate",)
+
+
+async def tp_recalc_tss(workout_id: str, source: str = "heartRate") -> dict[str, Any]:
+    """Recalculate a completed workout's TSS from another model (hrTSS).
+
+    TP command ``POST /fitness/v6/athletes/{id}/commands/workouts/{wid}/recalctss``
+    with ``{"value": "heartRate"}``. Fixes an inflated running TSS scored from
+    running power with a wrong threshold. Per workout only: the athlete's
+    preferred TSS source does not touch existing workouts, and a device that
+    records running power keeps scoring new runs from power. TP's own GUI
+    "recalculate" reverts these per-workout overrides.
+
+    Returns the workout's TSS and ``tss_source`` before and after.
+    """
+    try:
+        validated = WorkoutIdInput(workout_id=workout_id)
+    except (ValidationError, ValueError) as e:
+        msg = format_validation_error(e) if isinstance(e, ValidationError) else str(e)
+        return {"isError": True, "error_code": "VALIDATION_ERROR", "message": msg}
+    if source not in _RECALC_TSS_SOURCES:
+        return {
+            "isError": True,
+            "error_code": "VALIDATION_ERROR",
+            "message": f"source must be one of {list(_RECALC_TSS_SOURCES)}",
+        }
+
+    async with TPClient() as client:
+        athlete_id = await client.ensure_athlete_id()
+        if not athlete_id:
+            return {
+                "isError": True,
+                "error_code": "AUTH_INVALID",
+                "message": "Could not get athlete ID. Re-authenticate.",
+            }
+        wid = validated.workout_id
+        get_endpoint = f"/fitness/v6/athletes/{athlete_id}/workouts/{wid}"
+        before = await client.get(get_endpoint)
+        if before.is_error or not isinstance(before.data, dict):
+            return {
+                "isError": True,
+                "error_code": before.error_code.value if before.error_code else "API_ERROR",
+                "message": before.message or "Could not read the workout.",
+            }
+        response = await client.post(
+            f"/fitness/v6/athletes/{athlete_id}/commands/workouts/{wid}/recalctss",
+            json={"value": source},
+        )
+        if response.is_error:
+            return {
+                "isError": True,
+                "error_code": response.error_code.value if response.error_code else "API_ERROR",
+                "message": response.message,
+            }
+        after = await client.get(get_endpoint)
+        after_data = after.data if not after.is_error and isinstance(after.data, dict) else {}
+
+    return {
+        "success": True,
+        "workout_id": wid,
+        "source": source,
+        "tss_before": before.data.get("tssActual"),
+        "tss_source_before": before.data.get("tssSource"),
+        "tss_after": after_data.get("tssActual"),
+        "tss_source_after": after_data.get("tssSource"),
+    }
 
 
 async def tp_pair_workout(

@@ -75,7 +75,35 @@ def _save_analysis_json(workout_id: int, data: dict[str, Any]) -> str:
     ANALYSIS_DATA_DIR.mkdir(parents=True, exist_ok=True)
     filepath = ANALYSIS_DATA_DIR / f"workout_{workout_id}.json"
     filepath.write_text(json.dumps(data, indent=2))
+    _trim_analysis_dir(keep=filepath)
     return str(filepath)
+
+
+# Full-resolution series are ~1-3 MB per workout (was ~0.3 MB downsampled), and a
+# long-running server analysing a roster every day would fill the disk. Past the
+# cap the oldest files go first, down to the low-water mark.
+_ANALYSIS_DIR_MAX_BYTES = 1024 * 1024 * 1024
+_ANALYSIS_DIR_TRIM_TO_BYTES = 768 * 1024 * 1024
+
+
+def _trim_analysis_dir(keep: Path) -> None:
+    try:
+        files = [(f.stat().st_mtime, f.stat().st_size, f) for f in ANALYSIS_DATA_DIR.glob("workout_*.json")]
+    except OSError:
+        return
+    total = sum(size for _, size, _ in files)
+    if total <= _ANALYSIS_DIR_MAX_BYTES:
+        return
+    for _, size, f in sorted(files, key=lambda x: x[0]):
+        if total <= _ANALYSIS_DIR_TRIM_TO_BYTES:
+            break
+        if f == keep:
+            continue
+        try:
+            f.unlink()
+            total -= size
+        except OSError:
+            logger.warning("could not remove old analysis file %s", f)
 
 
 def _error_for_status(status_code: int, workout_id: str) -> dict[str, Any] | None:
@@ -158,7 +186,13 @@ def _row_time(row: dict[str, Any]) -> float | None:
 def _stitch_windows(
     windows: list[list[dict[str, Any]]],
 ) -> list[dict[str, Any]] | None:
-    """Merge chart windows by time, or reject malformed window data."""
+    """Merge chart windows by time, or reject malformed window data.
+
+    ``Distance`` is accumulated, but a window that starts while the watch is
+    paused returns it as 0 until the next real sample — stitched as-is, the
+    series drops to 0 and jumps back by the whole distance so far, which reads
+    as a GPS jump downstream. Within the stitched series it never decreases.
+    """
     by_time: dict[float, dict[str, Any]] = {}
     for rows in windows:
         if not rows:
@@ -168,7 +202,19 @@ def _stitch_windows(
             if time_value is None:
                 return None
             by_time.setdefault(time_value, row)
-    return [by_time[time_value] for time_value in sorted(by_time)]
+
+    merged: list[dict[str, Any]] = []
+    top: float | None = None
+    for time_value in sorted(by_time):
+        row = by_time[time_value]
+        distance = row.get("Distance")
+        if isinstance(distance, (int, float)) and not isinstance(distance, bool):
+            if top is not None and distance < top:
+                row = {**row, "Distance": top}
+            else:
+                top = float(distance)
+        merged.append(row)
+    return merged
 
 
 async def _refetch_full_resolution(

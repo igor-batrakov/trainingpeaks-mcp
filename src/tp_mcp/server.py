@@ -94,6 +94,7 @@ from tp_mcp.tools import (
     tp_list_training_plans,
     tp_log_metrics,
     tp_pair_workout,
+    tp_recalc_tss,
     tp_refresh_auth,
     tp_remove_athletes_from_group,
     tp_rename_group,
@@ -230,6 +231,15 @@ TOOLS = [
                     ),
                     "default": False,
                 },
+                "include_comments": {
+                    "type": "boolean",
+                    "description": (
+                        "Include each workout's comments (same objects as "
+                        "tp_get_workout_comments). Off by default: comment text "
+                        "can be long."
+                    ),
+                    "default": False,
+                },
             },
             "required": ["start_date", "end_date"],
         },
@@ -261,7 +271,7 @@ TOOLS = [
                 "title": {"type": "string", "description": "Workout title"},
                 "duration_minutes": {
                     "type": "integer",
-                    "description": "Planned duration in minutes (optional if structure provided)",
+                    "description": "Planned duration in minutes (optional with distance_km or structure)",
                 },
                 "description": {"type": "string", "description": "Optional description"},
                 "distance_km": {"type": "number", "description": "Optional distance in km"},
@@ -371,6 +381,27 @@ TOOLS = [
                 },
             },
             "required": ["workout_ids"],
+        },
+    ),
+    Tool(
+        name="tp_recalc_tss",
+        description=(
+            "Recalculate a completed workout's TSS by heart rate (hrTSS). Use for a run "
+            "whose TSS was scored from running power with a wrong threshold. Per "
+            "workout; TP's own GUI 'recalculate' reverts it. Returns TSS before/after."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "workout_id": {"type": "string", "description": "Completed workout ID."},
+                "source": {
+                    "type": "string",
+                    "enum": ["heartRate"],
+                    "default": "heartRate",
+                    "description": "TSS model to recalculate from (only heartRate).",
+                },
+            },
+            "required": ["workout_id"],
         },
     ),
     Tool(
@@ -683,17 +714,26 @@ TOOLS = [
     ),
     Tool(
         name="tp_update_hr_zones",
-        description="Update heart rate zones.",
+        description="Update the heart-rate zone set of ONE sport (threshold/LTHR, max, resting), "
+                    "preserving its calculation method. TrainingPeaks keeps separate HR zone sets "
+                    "per sport (general=0, swim=1, bike=2, run=3); workouts use their sport's own "
+                    "set when it exists, so pick the sport whose zones should change - updating "
+                    "'general' does not affect a sport that has its own set. Returns ZONES_MISSING "
+                    "(nothing written) if the athlete has no set for that sport; create one with "
+                    "tp_create_zones.",
         input_schema={
             "type": "object",
             "properties": {
-                "threshold_hr": {"type": "integer"},
-                "max_hr": {"type": "integer"},
-                "resting_hr": {"type": "integer"},
+                "threshold_hr": {"type": "integer",
+                                 "description": "Threshold HR (LTHR) in bpm; bands are recomputed from it."},
+                "max_hr": {"type": "integer", "description": "Maximum HR in bpm (anchor)."},
+                "resting_hr": {"type": "integer", "description": "Resting HR in bpm (anchor)."},
                 "workout_type": {
                     "type": "string",
                     "enum": ["general", "bike", "run", "swim", "xcski", "mtnbike", "rowing"],
-                    "default": "general"},
+                    "default": "general",
+                    "description": "Which sport's HR zone set to update (general -> workoutTypeId 0, "
+                                   "swim -> 1, bike -> 2, run -> 3). Must already exist."},
             },
             "required": [],
         },
@@ -1746,6 +1786,7 @@ async def _h_get_workouts(args):
         start_date=args["start_date"], end_date=args["end_date"],
         workout_filter=args.get("type", "all"),
         include_structure=args.get("include_structure", False),
+        include_comments=bool(args.get("include_comments", False)),
     )
 
 @_handler("tp_get_workout")
@@ -1791,6 +1832,11 @@ async def _h_copy_workout(args):
 
 @_handler("tp_reorder_workouts")
 async def _h_reorder(args): return await tp_reorder_workouts(workout_ids=args["workout_ids"])
+
+@_handler("tp_recalc_tss")
+async def _h_recalc_tss(args):
+    return await tp_recalc_tss(
+        workout_id=args["workout_id"], source=args.get("source", "heartRate"))
 
 @_handler("tp_unpair_workout")
 async def _h_unpair(args): return await tp_unpair_workout(workout_id=args["workout_id"])

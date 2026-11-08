@@ -101,6 +101,15 @@ class WorkoutSummary(BaseModel):
     structure: dict[str, Any] | str | None = None
     completed: bool | None = Field(default=None)
     description: str | None = None
+    # Extra v6 list fields that used to require a per-workout detail GET to
+    # read. The calendar list already carries them; exposing them lets a
+    # roster-wide poller (e.g. "any new athlete comments today?") stay at one
+    # request per athlete instead of one per workout.
+    last_modified: str | None = Field(default=None, alias="lastModifiedDate")
+    start_time: str | None = Field(default=None, alias="startTime")
+    rpe: int | float | None = None
+    feeling: int | float | None = None
+    comments: list[dict[str, Any]] = Field(default_factory=list, alias="workoutComments")
 
     @property
     def date(self) -> date_type:
@@ -172,6 +181,7 @@ class WorkoutDetail(BaseModel):
     avg_power: float | None = Field(default=None, alias="powerAverage")
     normalized_power: float | None = Field(default=None, alias="normalizedPowerActual")
     avg_hr: int | None = Field(default=None, alias="heartRateAverage")
+    max_hr: int | None = Field(default=None, alias="heartRateMaximum")
     avg_cadence: float | None = Field(default=None, alias="cadenceAverage")
     elevation_gain: float | None = Field(default=None, alias="elevationGain")
     completed: bool | None = Field(default=None)

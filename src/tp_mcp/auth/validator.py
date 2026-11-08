@@ -78,17 +78,20 @@ async def validate_auth(cookie: str) -> AuthResult:
 
                 token_info = data.get("token")
                 if not isinstance(token_info, dict):
-                    status = (
-                        AuthStatus.EXPIRED
-                        if data.get("success") is False
-                        else AuthStatus.INVALID
-                    )
+                    # ``success: false`` means the session is gone. Otherwise a
+                    # missing token is the transient TP glitch seen 13.09.2026
+                    # (200 with ``"token": null``, ten times in three minutes):
+                    # report a retryable network error, not a bad cookie.
+                    if data.get("success") is False:
+                        return AuthResult(
+                            status=AuthStatus.EXPIRED,
+                            message="Session expired. Please re-authenticate.",
+                        )
                     return AuthResult(
-                        status=status,
+                        status=AuthStatus.NETWORK_ERROR,
                         message=(
-                            "Session expired. Please re-authenticate."
-                            if status == AuthStatus.EXPIRED
-                            else "Token endpoint returned no token. Please try again."
+                            "Token endpoint returned no access token "
+                            "(transient TrainingPeaks glitch) — retry."
                         ),
                     )
 

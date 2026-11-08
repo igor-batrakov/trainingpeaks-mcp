@@ -574,3 +574,36 @@ class TestTpAnalyzeWorkout:
         assert rows is coarse
         assert resolution == "downsampled"
         http_client.post.assert_not_awaited()
+
+
+def test_analysis_dir_is_trimmed_oldest_first(tmp_path, monkeypatch):
+    import os
+
+    from tp_mcp.tools import analyze
+
+    monkeypatch.setattr(analyze, "ANALYSIS_DATA_DIR", tmp_path)
+    monkeypatch.setattr(analyze, "_ANALYSIS_DIR_MAX_BYTES", 250)
+    monkeypatch.setattr(analyze, "_ANALYSIS_DIR_TRIM_TO_BYTES", 220)
+    for i in range(3):
+        f = tmp_path / f"workout_{i}.json"
+        f.write_text("x" * 100)
+        os.utime(f, (1000 + i, 1000 + i))
+    analyze._save_analysis_json(9, {"pad": "y" * 80})
+    left = sorted(p.name for p in tmp_path.iterdir())
+    assert left == ["workout_2.json", "workout_9.json"]
+
+
+def test_stitched_distance_never_drops_at_a_paused_window_start():
+    """A window that opens during a watch pause returns Distance 0 until the next
+    real sample; stitched as-is that reads downstream as a GPS jump of the whole
+    distance so far (Yasyukevich run 2026-10-06: 11.04 km "corrected" to 1.26)."""
+    from tp_mcp.tools.analyze import _stitch_windows
+
+    first = [{"time": 899, "Distance": 1.8, "Speed": None},
+             {"time": 900, "Distance": 1.8, "Speed": None}]
+    second = [{"time": 900, "Distance": 0, "Speed": None},
+              {"time": 901, "Distance": 0, "Speed": None},
+              {"time": 950, "Distance": 1.88, "Speed": 11.5}]
+    rows = _stitch_windows([first, second])
+    assert [r["Distance"] for r in rows] == [1.8, 1.8, 1.8, 1.88]
+    assert second[1]["Distance"] == 0          # source rows are not mutated
