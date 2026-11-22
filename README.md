@@ -141,11 +141,11 @@ honoured exactly. They update a **threshold** (FTP / LTHR / threshold pace).
 | Tool | Description |
 |------|-------------|
 | `tp_search_exercises` | Search the built-in strength exercise library by name (offline) |
-| `tp_create_strength_workout` | Create a structured strength/gym workout (blocks of exercises with sets and parameters) |
+| `tp_create_strength_workout` | Create a structured strength/gym workout (blocks of exercises with sets and parameters); `duration_minutes` sets the planned duration shown in the calendar |
 | `tp_get_strength_summary` | Get a strength workout's compliance summary (blocks/prescriptions/sets completed) |
 | `tp_get_strength_workouts` | List strength/gym workouts in a date range (they don't appear in `tp_get_workouts`) |
 | `tp_get_strength_workout` | Get a strength workout's full detail: blocks, exercises, sets, prescribed vs executed weights |
-| `tp_update_strength_workout` | Update a strength workout in place (replace/append blocks, retitle, mark complete) - preserves Garmin TSS and FIT files, so use this rather than delete-and-recreate on device-synced workouts |
+| `tp_update_strength_workout` | Update a strength workout in place (replace/append blocks, retitle, planned duration, mark complete) - preserves Garmin TSS and FIT files, so use this rather than delete-and-recreate on device-synced workouts |
 | `tp_delete_strength_workout` | Delete a strength workout by ID |
 
 ### Athlete Groups (coach accounts)
@@ -354,7 +354,7 @@ needed; it is omitted by default to keep date-range responses compact.
 
 For advanced round-trip use cases, `tp_create_workout` and `tp_update_workout` also accept a native `structured_workout` payload in TrainingPeaks builder format. When a workout already has a native structure, `tp_get_workout` returns it as `structured_workout`.
 
-Workout comments are exposed via `tp_get_workout()["workout_comments"]` or `tp_get_workout_comments()`. The older top-level `coach_comments` and `athlete_comments` fields are no longer returned by `tp_get_workout`.
+Workout comments are exposed via `tp_get_workout()["workout_comments"]` or `tp_get_workout_comments()`. The older plural `coach_comments` and `athlete_comments` fields are no longer returned by `tp_get_workout`; the pre/post-activity texts come back as singular `coach_comment` and `athlete_comment`.
 
 ```json
 {

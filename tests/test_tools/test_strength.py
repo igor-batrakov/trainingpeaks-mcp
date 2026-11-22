@@ -621,3 +621,51 @@ class TestUpdateStrength:
         r = await self._run(http, workout_id="24373159", blocks=_BLOCKS)
         assert r["error_code"] == "API_ERROR"
         assert "bad" in r["message"]
+
+    @pytest.mark.asyncio
+    async def test_duration_only_sets_prescribed_seconds(self):
+        http = _mock_get_then_post(_garmin_doc())
+        r = await self._run(http, workout_id="24373159", duration_minutes=45)
+        body = _posted(http)
+        assert body["prescribedDurationInSeconds"] == 2700
+        assert body["executedDurationInSeconds"] == 3144   # telemetry untouched
+        assert r["changed"] == ["duration"]
+        assert r["prescribed_duration_min"] == 45.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", [0, -5, 2000, "45", True])
+    async def test_bad_duration_rejected_before_network(self, bad):
+        r = await tp_update_strength_workout(workout_id="1", duration_minutes=bad)
+        assert r["error_code"] == "VALIDATION_ERROR"
+
+
+class TestDuration:
+    def test_payload_without_duration_has_no_field(self):
+        blocks = [{"type": "SingleExercise", "exercises": [{"id": "1", "sets": [{"Reps": "10"}]}]}]
+        assert "prescribedDurationInSeconds" not in _build_payload(1, "2027-01-06", "x", blocks, None)
+
+    def test_payload_with_duration(self):
+        blocks = [{"type": "SingleExercise", "exercises": [{"id": "1", "sets": [{"Reps": "10"}]}]}]
+        p = _build_payload(1, "2027-01-06", "x", blocks, None, 37.5)
+        assert p["prescribedDurationInSeconds"] == 2250
+
+    @pytest.mark.asyncio
+    async def test_create_sends_duration(self):
+        blocks = [{"type": "SingleExercise", "exercises": [{"id": "1", "sets": [{"Reps": "10"}]}]}]
+        http = _mock_http(200, {"data": {"id": "555", "prescribedDurationInSeconds": 2400,
+                                         "snapshot": {"totalBlocks": 1, "totalSets": 1}}})
+        with patch("tp_mcp.tools.strength.TPClient") as mtp:
+            mtp.return_value.__aenter__.return_value = _mock_tp_client()
+            with patch("tp_mcp.tools.strength.httpx.AsyncClient") as mh:
+                mh.return_value.__aenter__.return_value = http
+                r = await tp_create_strength_workout(
+                    date="2027-01-06", title="Day", blocks=blocks, duration_minutes=40)
+        assert http.post.call_args.kwargs["json"]["prescribedDurationInSeconds"] == 2400
+        assert r["prescribed_duration_min"] == 40.0
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_bad_duration(self):
+        blocks = [{"type": "SingleExercise", "exercises": [{"id": "1", "sets": [{"Reps": "10"}]}]}]
+        r = await tp_create_strength_workout(
+            date="2027-01-06", title="Day", blocks=blocks, duration_minutes=0)
+        assert r["error_code"] == "VALIDATION_ERROR"

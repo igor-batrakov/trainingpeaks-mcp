@@ -253,12 +253,28 @@ def _build_prescription(ex: dict[str, Any], catalogue: dict[str, Any]) -> dict[s
     }
 
 
+def _duration_error(duration_minutes: Any) -> str | None:
+    """Validate a planned duration in minutes; None means "not given"."""
+    if duration_minutes is None:
+        return None
+    if isinstance(duration_minutes, bool) or not isinstance(duration_minutes, int | float):
+        return "duration_minutes must be a number of minutes."
+    if not 0 < duration_minutes <= 24 * 60:
+        return "duration_minutes must be greater than 0 and at most 1440."
+    return None
+
+
+def _duration_seconds(duration_minutes: float) -> int:
+    return int(round(duration_minutes * 60))
+
+
 def _build_payload(
     athlete_id: int,
     date: str,
     title: str,
     blocks: list[dict[str, Any]],
     instructions: str | None,
+    duration_minutes: float | None = None,
 ) -> dict[str, Any]:
     catalogue = _catalogue()
     blocks_out = []
@@ -275,7 +291,7 @@ def _build_payload(
                 "prescriptions": prescs,
             }
         )
-    return {
+    payload: dict[str, Any] = {
         "id": _u(),
         "workoutType": "StructuredStrength",
         "calendarId": athlete_id,
@@ -290,6 +306,10 @@ def _build_payload(
             "completedSets": 0,
         },
     }
+    # The TP calendar shows a strength workout without time unless this is set.
+    if duration_minutes is not None:
+        payload["prescribedDurationInSeconds"] = _duration_seconds(duration_minutes)
+    return payload
 
 
 # ── Auth boilerplate (mirrors analyze.py — strength API is a different host) ──
@@ -338,6 +358,7 @@ async def tp_create_strength_workout(
     title: str,
     blocks: list[dict[str, Any]],
     instructions: str | None = None,
+    duration_minutes: float | None = None,
 ) -> dict[str, Any]:
     """Create a structured strength (gym) workout on the athlete's calendar.
 
@@ -355,6 +376,8 @@ async def tp_create_strength_workout(
             For Superset / Circuit blocks every exercise must have the same
             number of sets.
         instructions: Optional free-text instructions for the whole session.
+        duration_minutes: Optional planned duration in minutes
+            (`prescribedDurationInSeconds`); without it the calendar shows no time.
 
     Returns:
         Dict with the created `workout_id`, date, title, and block/set counts.
@@ -368,12 +391,17 @@ async def tp_create_strength_workout(
     invalid = _validate_blocks(blocks)
     if invalid:
         return _err("VALIDATION_ERROR", invalid)
+    bad_duration = _duration_error(duration_minutes)
+    if bad_duration:
+        return _err("VALIDATION_ERROR", bad_duration)
 
     async with TPClient() as client:
         athlete_id, access, err = await _access(client)
         if err:
             return err
-        payload = _build_payload(athlete_id, date.strip(), title.strip(), blocks, instructions)
+        payload = _build_payload(
+            athlete_id, date.strip(), title.strip(), blocks, instructions, duration_minutes
+        )
         try:
             async with httpx.AsyncClient(timeout=STRENGTH_TIMEOUT) as h:
                 r = await h.post(
@@ -406,6 +434,9 @@ async def tp_create_strength_workout(
             "title": title.strip(),
             "total_blocks": snap.get("totalBlocks"),
             "total_sets": snap.get("totalSets"),
+            "prescribed_duration_min": _min(data.get("prescribedDurationInSeconds"))
+            if data.get("prescribedDurationInSeconds") is not None
+            else duration_minutes,
         }
 
 
@@ -469,6 +500,7 @@ async def tp_update_strength_workout(
     mode: str = "replace",
     mark_complete: bool = False,
     dry_run: bool = False,
+    duration_minutes: float | None = None,
 ) -> dict[str, Any]:
     """Update an existing strength workout in place (blocks, title, instructions).
 
@@ -494,6 +526,8 @@ async def tp_update_strength_workout(
             values are left untouched.
         dry_run: Validate and build the update, report what would change, but
             send nothing.
+        duration_minutes: Optional new planned duration in minutes
+            (`prescribedDurationInSeconds`).
 
     Returns:
         Dict with the workout_id, before/after block and set counts, the fields
@@ -510,10 +544,20 @@ async def tp_update_strength_workout(
         invalid = _validate_blocks(blocks)
         if invalid:
             return _err("VALIDATION_ERROR", invalid)
-    if blocks is None and title is None and instructions is None and not mark_complete:
+    bad_duration = _duration_error(duration_minutes)
+    if bad_duration:
+        return _err("VALIDATION_ERROR", bad_duration)
+    if (
+        blocks is None
+        and title is None
+        and instructions is None
+        and duration_minutes is None
+        and not mark_complete
+    ):
         return _err(
             "VALIDATION_ERROR",
-            "Nothing to update: provide blocks, title, instructions or mark_complete.",
+            "Nothing to update: provide blocks, title, instructions, "
+            "duration_minutes or mark_complete.",
         )
 
     async with TPClient() as client:
@@ -561,6 +605,9 @@ async def tp_update_strength_workout(
                 if instructions is not None:
                     doc["instructions"] = instructions
                     changed.append("instructions")
+                if duration_minutes is not None:
+                    doc["prescribedDurationInSeconds"] = _duration_seconds(duration_minutes)
+                    changed.append("duration")
                 if mark_complete:
                     _mark_complete(doc.get("blocks") or [])
                     changed.append("mark_complete")
@@ -610,6 +657,9 @@ async def tp_update_strength_workout(
             "sets_before": before.get("totalSets"),
             "sets_after": snap.get("totalSets"),
             "completed_sets": snap.get("completedSets"),
+            "prescribed_duration_min": _min(
+                data.get("prescribedDurationInSeconds", doc.get("prescribedDurationInSeconds"))
+            ),
         }
         # The upsert must edit in place; a different id means a duplicate was
         # created and the caller needs to know immediately.
