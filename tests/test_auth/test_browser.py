@@ -80,3 +80,49 @@ def test_expired_cookie_reports_expiry_without_leaking_value():
     assert "expired" in result.message.lower()
     assert "2024-01-01" in result.message
     assert "expired-secret" not in result.message
+
+
+def test_cookie_found_in_non_default_chromium_profile():
+    calls: list[str | None] = []
+
+    def chrome(domain_name, cookie_file=None):
+        calls.append(cookie_file)
+        if cookie_file == "/x/Profile 1/Cookies":
+            return [_cookie("profile-secret", expires=4_102_444_800)]
+        return []
+
+    module = _browser_module({})
+    module.chrome = chrome
+
+    with (
+        patch.dict(sys.modules, {"browser_cookie3": module}),
+        patch(
+            "tp_mcp.auth.browser._extra_profile_cookie_files",
+            return_value=["/x/Profile 1/Cookies"],
+        ),
+    ):
+        result = extract_tp_cookie("chrome")
+
+    assert result.success is True
+    assert result.cookie == "profile-secret"
+    assert calls == [None, "/x/Profile 1/Cookies"]
+    assert "profile-secret" not in result.message
+
+
+def test_extra_profile_cookie_files_lists_profile_dirs(tmp_path, monkeypatch):
+    from tp_mcp.auth import browser as browser_mod
+
+    for name in ("Default", "Profile 1", "Profile 2"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "Cookies").write_text("")
+    monkeypatch.setitem(
+        browser_mod.CHROMIUM_PROFILE_ROOTS, sys.platform, {"chrome": tmp_path}
+    )
+
+    files = browser_mod._extra_profile_cookie_files("chrome")
+
+    assert files == [
+        str(tmp_path / "Profile 1" / "Cookies"),
+        str(tmp_path / "Profile 2" / "Cookies"),
+    ]
+    assert browser_mod._extra_profile_cookie_files("firefox") == []

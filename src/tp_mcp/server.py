@@ -1410,6 +1410,13 @@ TOOLS = [
                 "date": {"type": "string", "description": "Planned date YYYY-MM-DD."},
                 "title": {"type": "string", "description": "Workout title, e.g. 'Upper Body'."},
                 "instructions": {"type": "string", "description": "Optional session instructions."},
+                "duration_minutes": {
+                    "type": "number",
+                    "description": (
+                        "Planned duration in minutes. Set it: without it the TP calendar "
+                        "shows the workout with no time."
+                    ),
+                },
                 "blocks": {
                     "type": "array",
                     "items": {"type": "object"},
@@ -1492,6 +1499,10 @@ TOOLS = [
                 },
                 "title": {"type": "string", "description": "Optional new title."},
                 "instructions": {"type": "string", "description": "Optional new instructions."},
+                "duration_minutes": {
+                    "type": "number",
+                    "description": "Optional new planned duration in minutes.",
+                },
                 "mode": {
                     "type": "string",
                     "enum": ["replace", "append"],
@@ -1912,7 +1923,8 @@ async def _h_search_exercises(args):
 async def _h_create_strength(args):
     return await tp_create_strength_workout(
         date=args["date"], title=args["title"],
-        blocks=args.get("blocks") or [], instructions=args.get("instructions"))
+        blocks=args.get("blocks") or [], instructions=args.get("instructions"),
+        duration_minutes=args.get("duration_minutes"))
 
 @_handler("tp_get_strength_summary")
 async def _h_get_strength_summary(args):
@@ -1934,7 +1946,8 @@ async def _h_update_strength(args):
         title=args.get("title"), instructions=args.get("instructions"),
         mode=args.get("mode", "replace"),
         mark_complete=bool(args.get("mark_complete", False)),
-        dry_run=bool(args.get("dry_run", False)))
+        dry_run=bool(args.get("dry_run", False)),
+        duration_minutes=args.get("duration_minutes"))
 
 @_handler("tp_delete_strength_workout")
 async def _h_delete_strength(args):
